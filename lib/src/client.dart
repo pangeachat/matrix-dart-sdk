@@ -64,9 +64,6 @@ class Client extends MatrixApi {
 
   int? get id => _id;
 
-  final Map<String, GetSpaceHierarchyResponse> _getSpaceHierarchyResponseCache =
-      {};
-
   final FutureOr<DatabaseApi> Function(Client)? databaseBuilder;
   final FutureOr<DatabaseApi> Function(Client)? legacyDatabaseBuilder;
   DatabaseApi? _database;
@@ -2209,7 +2206,7 @@ class Client extends MatrixApi {
             if (spaceAsRoom.spaceChildren
                 .map((child) => child.roomId)
                 .contains(room.id)) {
-              _getSpaceHierarchyResponseCache.remove(spaceId);
+              await database?.removeSpaceHierarchy(spaceId);
             }
           }
         }
@@ -3346,15 +3343,19 @@ class Client extends MatrixApi {
   @override
   Future<GetSpaceHierarchyResponse> getSpaceHierarchy(String roomId,
       {bool? suggestedOnly, int? limit, int? maxDepth, String? from}) async {
-    if (!_getSpaceHierarchyResponseCache.containsKey(roomId)) {
-      final response = await super.getSpaceHierarchy(roomId,
-          suggestedOnly: suggestedOnly,
-          limit: limit,
-          maxDepth: maxDepth,
-          from: from);
-      _getSpaceHierarchyResponseCache[roomId] = response;
+    final cachedResponse = await database?.getSpaceHierarchy(roomId);
+    if (cachedResponse == null) {
+      final response = await super.getSpaceHierarchy(
+        roomId,
+        suggestedOnly: suggestedOnly,
+        limit: limit,
+        maxDepth: maxDepth,
+        from: from,
+      );
+      await database?.storeSpaceHierarchy(roomId, response);
+      return response;
     }
-    return _getSpaceHierarchyResponseCache[roomId]!;
+    return cachedResponse;
   }
 }
 
