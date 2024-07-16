@@ -64,6 +64,9 @@ class Client extends MatrixApi {
 
   int? get id => _id;
 
+  final Map<String, GetSpaceHierarchyResponse> _getSpaceHierarchyResponseCache =
+      {};
+
   final FutureOr<DatabaseApi> Function(Client)? databaseBuilder;
   final FutureOr<DatabaseApi> Function(Client)? legacyDatabaseBuilder;
   DatabaseApi? _database;
@@ -2194,6 +2197,22 @@ class Client extends MatrixApi {
             EventUpdateType.accountData,
           );
         }
+
+        // invalidate _getSpaceHierarchyResponseCache
+        if (room.spaceParents.isNotEmpty) {
+          for (final space in room.spaceParents) {
+            final String? spaceId = space.roomId;
+            if (spaceId == null) continue;
+            if (spaceId == room.id) continue;
+            final Room? spaceAsRoom = getRoomById(spaceId);
+            if (spaceAsRoom == null) continue;
+            if (spaceAsRoom.spaceChildren
+                .map((child) => child.roomId)
+                .contains(room.id)) {
+              _getSpaceHierarchyResponseCache.remove(spaceId);
+            }
+          }
+        }
       }
 
       if (syncRoomUpdate is LeftRoomUpdate) {
@@ -3322,6 +3341,20 @@ class Client extends MatrixApi {
       waitForFirstSync: false,
       waitUntilLoadCompletedLoaded: false,
     );
+  }
+
+  @override
+  Future<GetSpaceHierarchyResponse> getSpaceHierarchy(String roomId,
+      {bool? suggestedOnly, int? limit, int? maxDepth, String? from}) async {
+    if (!_getSpaceHierarchyResponseCache.containsKey(roomId)) {
+      final response = await super.getSpaceHierarchy(roomId,
+          suggestedOnly: suggestedOnly,
+          limit: limit,
+          maxDepth: maxDepth,
+          from: from);
+      _getSpaceHierarchyResponseCache[roomId] = response;
+    }
+    return _getSpaceHierarchyResponseCache[roomId]!;
   }
 }
 
