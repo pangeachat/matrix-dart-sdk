@@ -103,7 +103,7 @@ class MatrixSdkDatabase extends DatabaseApi with DatabaseFileStorage {
 
   late Box<String> _seenDeviceKeysBox;
 
-  late Box<GetSpaceHierarchyResponse> _spacesHierarchyBox;
+  late Box<Map> _spacesHierarchyBox;
 
   @override
   final int maxFileSize;
@@ -1633,13 +1633,15 @@ class MatrixSdkDatabase extends DatabaseApi with DatabaseFileStorage {
 
   @override
   Future<GetSpaceHierarchyResponse?> getSpaceHierarchy(String spaceId) async {
-    return await _spacesHierarchyBox.get(spaceId);
+    final raw_space_hierarchy = await _spacesHierarchyBox.get(spaceId);
+    if (raw_space_hierarchy == null) return null;
+    return GetSpaceHierarchyResponse.fromJson(copyMap(raw_space_hierarchy));
   }
 
   @override
   Future<void> storeSpaceHierarchy(
           String spaceId, GetSpaceHierarchyResponse hierarchy) =>
-      _spacesHierarchyBox.put(spaceId, hierarchy);
+      _spacesHierarchyBox.put(spaceId, hierarchy.toJson());
 
   @override
   Future<void> removeSpaceHierarchy(String spaceId) =>
