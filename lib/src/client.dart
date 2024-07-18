@@ -2195,7 +2195,7 @@ class Client extends MatrixApi {
           );
         }
 
-        // invalidate _getSpaceHierarchyResponseCache
+        // invalidate space hierarchy cache
         if (room.spaceParents.isNotEmpty) {
           for (final space in room.spaceParents) {
             final String? spaceId = space.roomId;
@@ -3374,13 +3374,17 @@ class Client extends MatrixApi {
           newRooms.add(room);
         }
       }
-      final newResponse = GetSpaceHierarchyResponse(
-        rooms: newRooms,
-        nextBatch: response.nextBatch,
-      );
       // store new response
-      await database?.storeSpaceHierarchy(roomId, newResponse);
-      return newResponse;
+      await database?.storeSpaceHierarchy(
+          roomId,
+          GetSpaceHierarchyResponse(
+            rooms: newRooms,
+            nextBatch: response.nextBatch,
+          ));
+
+      // not returning new response since UI is union-ing the responses rooms
+      // returning new rooms will cause duplicates
+      return response;
     }
     return cachedResponse;
   }
