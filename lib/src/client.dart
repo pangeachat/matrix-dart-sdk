@@ -2194,22 +2194,6 @@ class Client extends MatrixApi {
             EventUpdateType.accountData,
           );
         }
-
-        // invalidate space hierarchy cache
-        if (room.spaceParents.isNotEmpty) {
-          for (final space in room.spaceParents) {
-            final String? spaceId = space.roomId;
-            if (spaceId == null) continue;
-            if (spaceId == room.id) continue;
-            final Room? spaceAsRoom = getRoomById(spaceId);
-            if (spaceAsRoom == null) continue;
-            if (spaceAsRoom.spaceChildren
-                .map((child) => child.roomId)
-                .contains(room.id)) {
-              await database?.removeSpaceHierarchy(spaceId);
-            }
-          }
-        }
       }
 
       if (syncRoomUpdate is LeftRoomUpdate) {
@@ -2322,6 +2306,7 @@ class Client extends MatrixApi {
           room.setState(user);
         }
       }
+
       _updateRoomsByEventUpdate(room, update);
       if (type != EventUpdateType.ephemeral && store) {
         await database?.storeEventUpdate(update, this);
@@ -2330,6 +2315,10 @@ class Client extends MatrixApi {
         await encryption?.handleEventUpdate(update);
       }
       onEvent.add(update);
+
+      if (event.type == EventTypes.SpaceChild) {
+        await database?.removeSpaceHierarchy(room.id);
+      }
 
       if (prevBatch != null &&
           (type == EventUpdateType.timeline ||
