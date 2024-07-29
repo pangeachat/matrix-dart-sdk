@@ -1466,7 +1466,7 @@ class Room {
       }
     }
 
-    this.timeline = Timeline(
+    timeline = Timeline(
         room: this,
         chunk: chunk,
         onChange: onChange,
@@ -1516,7 +1516,7 @@ class Room {
       }
     }
 
-    return this.timeline!;
+    return timeline!;
   }
 
   /// Returns all participants for this room. With lazy loading this
