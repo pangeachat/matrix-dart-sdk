@@ -334,6 +334,13 @@ abstract class DatabaseApi {
 
   Future<CachedPresence?> getPresence(String userId);
 
+  Future<GetSpaceHierarchyResponse?> getSpaceHierarchy(String spaceId);
+
+  Future<void> storeSpaceHierarchy(
+      String spaceId, GetSpaceHierarchyResponse hierarchy);
+
+  Future<void> removeSpaceHierarchy(String spaceId);
+
   /// Deletes the whole database. The database needs to be created again after
   /// this.
   Future<void> delete();

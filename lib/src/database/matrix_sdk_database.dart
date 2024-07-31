@@ -20,22 +20,19 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 
-import 'package:sqflite_common/sqflite.dart';
-
 import 'package:matrix/encryption/utils/olm_session.dart';
 import 'package:matrix/encryption/utils/outbound_group_session.dart';
 import 'package:matrix/encryption/utils/ssss_cache.dart';
 import 'package:matrix/encryption/utils/stored_inbound_group_session.dart';
 import 'package:matrix/matrix.dart';
+import 'package:matrix/src/database/database_file_storage_stub.dart'
+    if (dart.library.io) 'package:matrix/src/database/database_file_storage_io.dart';
+import 'package:matrix/src/database/indexeddb_box.dart'
+    if (dart.library.io) 'package:matrix/src/database/sqflite_box.dart';
 import 'package:matrix/src/utils/copy_map.dart';
 import 'package:matrix/src/utils/queued_to_device_event.dart';
 import 'package:matrix/src/utils/run_benchmarked.dart';
-
-import 'package:matrix/src/database/indexeddb_box.dart'
-    if (dart.library.io) 'package:matrix/src/database/sqflite_box.dart';
-
-import 'package:matrix/src/database/database_file_storage_stub.dart'
-    if (dart.library.io) 'package:matrix/src/database/database_file_storage_io.dart';
+import 'package:sqflite_common/sqflite.dart';
 
 /// Database based on SQlite3 on native and IndexedDB on web. For native you
 /// have to pass a `Database` object, which can be created with the sqflite
@@ -104,6 +101,8 @@ class MatrixSdkDatabase extends DatabaseApi with DatabaseFileStorage {
 
   late Box<String> _seenDeviceKeysBox;
 
+  late Box<Map> _spacesHierarchyBox;
+
   late Box<Map> _userProfilesBox;
 
   @override
@@ -162,6 +161,8 @@ class MatrixSdkDatabase extends DatabaseApi with DatabaseFileStorage {
 
   static const String _seenDeviceKeysBoxName = 'box_seen_device_keys';
 
+  static const String _spacesHierarchyBoxName = 'box_spaces_hierarchy';
+
   static const String _userProfilesBoxName = 'box_user_profiles';
 
   Database? database;
@@ -219,6 +220,7 @@ class MatrixSdkDatabase extends DatabaseApi with DatabaseFileStorage {
         _eventsBoxName,
         _seenDeviceIdsBoxName,
         _seenDeviceKeysBoxName,
+        _spacesHierarchyBoxName,
         _userProfilesBoxName,
       },
       sqfliteDatabase: database,
@@ -289,6 +291,9 @@ class MatrixSdkDatabase extends DatabaseApi with DatabaseFileStorage {
     _seenDeviceKeysBox = _collection.openBox(
       _seenDeviceKeysBoxName,
     );
+    _spacesHierarchyBox = _collection.openBox(
+      _spacesHierarchyBoxName,
+    );
     _userProfilesBox = _collection.openBox(
       _userProfilesBoxName,
     );
@@ -351,6 +356,7 @@ class MatrixSdkDatabase extends DatabaseApi with DatabaseFileStorage {
         await _presencesBox.clear();
         await _userProfilesBox.clear();
         await _clientBox.delete('prev_batch');
+        await _spacesHierarchyBox.clear();
       });
 
   @override
@@ -398,6 +404,11 @@ class MatrixSdkDatabase extends DatabaseApi with DatabaseFileStorage {
       final multiKey = TupleKey.fromString(key);
       if (multiKey.parts.first != roomId) continue;
       await _roomAccountDataBox.delete(key);
+    }
+    final spaceHierarchyKeys = await _spacesHierarchyBox.getAllKeys();
+    for (final key in spaceHierarchyKeys) {
+      if (key != roomId) continue;
+      await _spacesHierarchyBox.delete(key);
     }
     await _roomsBox.delete(roomId);
   }
@@ -1487,6 +1498,7 @@ class MatrixSdkDatabase extends DatabaseApi with DatabaseFileStorage {
       _eventsBoxName: await _eventsBox.getAllValues(),
       _seenDeviceIdsBoxName: await _seenDeviceIdsBox.getAllValues(),
       _seenDeviceKeysBoxName: await _seenDeviceKeysBox.getAllValues(),
+      _spacesHierarchyBoxName: await _spacesHierarchyBox.getAllValues(),
     };
     final json = jsonEncode(dataMap);
     await clear();
@@ -1567,6 +1579,9 @@ class MatrixSdkDatabase extends DatabaseApi with DatabaseFileStorage {
       for (final key in json[_seenDeviceKeysBoxName]!.keys) {
         await _seenDeviceKeysBox.put(key, json[_seenDeviceKeysBoxName]![key]);
       }
+      for (final key in json[_spacesHierarchyBoxName]!.keys) {
+        await _spacesHierarchyBox.put(key, json[_spacesHierarchyBoxName]![key]);
+      }
       return true;
     } catch (e, s) {
       Logs().e('Database import error: ', e, s);
@@ -1622,6 +1637,22 @@ class MatrixSdkDatabase extends DatabaseApi with DatabaseFileStorage {
 
     return CachedPresence.fromJson(copyMap(rawPresence));
   }
+
+  @override
+  Future<GetSpaceHierarchyResponse?> getSpaceHierarchy(String spaceId) async {
+    final raw_space_hierarchy = await _spacesHierarchyBox.get(spaceId);
+    if (raw_space_hierarchy == null) return null;
+    return GetSpaceHierarchyResponse.fromJson(copyMap(raw_space_hierarchy));
+  }
+
+  @override
+  Future<void> storeSpaceHierarchy(
+          String spaceId, GetSpaceHierarchyResponse hierarchy) =>
+      _spacesHierarchyBox.put(spaceId, hierarchy.toJson());
+
+  @override
+  Future<void> removeSpaceHierarchy(String spaceId) =>
+      _spacesHierarchyBox.delete(spaceId);
 
   @override
   Future<void> delete() async {

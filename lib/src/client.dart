@@ -79,6 +79,9 @@ class Client extends MatrixApi {
 
   Set<String> roomPreviewLastEvents;
 
+  bool Function(Event? currentLastEvent, Event newLastEvent)?
+      shouldReplaceRoomLastEvent;
+
   Set<String> supportedLoginTypes;
 
   bool requestHistoryOnLimitedTimeline;
@@ -2348,6 +2351,7 @@ class Client extends MatrixApi {
           room.setState(user);
         }
       }
+
       _updateRoomsByEventUpdate(room, update);
       if (type != EventUpdateType.ephemeral && store) {
         await database?.storeEventUpdate(update, this);
@@ -2356,6 +2360,10 @@ class Client extends MatrixApi {
         await encryption?.handleEventUpdate(update);
       }
       onEvent.add(update);
+
+      if (event.type == EventTypes.SpaceChild) {
+        await database?.removeSpaceHierarchy(room.id);
+      }
 
       if (prevBatch != null &&
           (type == EventUpdateType.timeline ||
@@ -2509,7 +2517,12 @@ class Client extends MatrixApi {
         }
 
         // Is this event of an important type for the last event?
-        if (!roomPreviewLastEvents.contains(event.type)) break;
+        // check if shouldReplaceLastEvent is set then use it instead of the below
+        if (shouldReplaceRoomLastEvent != null) {
+          if (!shouldReplaceRoomLastEvent!(room.lastEvent, event)) break;
+        } else {
+          if (!roomPreviewLastEvents.contains(event.type)) break;
+        }
 
         // Event is a valid new lastEvent:
         room.lastEvent = event;
@@ -3364,6 +3377,55 @@ class Client extends MatrixApi {
       waitForFirstSync: false,
       waitUntilLoadCompletedLoaded: false,
     );
+  }
+
+  @override
+  Future<GetSpaceHierarchyResponse> getSpaceHierarchy(String roomId,
+      {bool? suggestedOnly, int? limit, int? maxDepth, String? from}) async {
+    final cachedResponse = await database?.getSpaceHierarchy(roomId);
+    if (cachedResponse == null) {
+      final response = await super.getSpaceHierarchy(
+        roomId,
+        suggestedOnly: suggestedOnly,
+        limit: limit,
+        maxDepth: maxDepth,
+        from: from,
+      );
+      await database?.storeSpaceHierarchy(roomId, response);
+      return response;
+    }
+    if (cachedResponse.nextBatch != null &&
+        from != null &&
+        cachedResponse.nextBatch == from) {
+      final response = await super.getSpaceHierarchy(
+        roomId,
+        suggestedOnly: suggestedOnly,
+        limit: limit,
+        maxDepth: maxDepth,
+        from: from,
+      );
+      // extend existing response, ensure no duplicates. Unique by roomId
+      final existingRoomIds =
+          cachedResponse.rooms.map((room) => room.roomId).toSet();
+      final newRooms = cachedResponse.rooms;
+      for (final room in response.rooms) {
+        if (!existingRoomIds.contains(room.roomId)) {
+          newRooms.add(room);
+        }
+      }
+      // store new response
+      await database?.storeSpaceHierarchy(
+          roomId,
+          GetSpaceHierarchyResponse(
+            rooms: newRooms,
+            nextBatch: response.nextBatch,
+          ));
+
+      // not returning new response since UI is union-ing the responses rooms
+      // returning new rooms will cause duplicates
+      return response;
+    }
+    return cachedResponse;
   }
 }
 
