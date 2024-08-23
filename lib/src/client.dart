@@ -25,10 +25,6 @@ import 'dart:typed_data';
 import 'package:async/async.dart';
 import 'package:collection/collection.dart' show IterableExtension;
 import 'package:http/http.dart' as http;
-import 'package:mime/mime.dart';
-import 'package:olm/olm.dart' as olm;
-import 'package:random_string/random_string.dart';
-
 import 'package:matrix/encryption.dart';
 import 'package:matrix/matrix.dart';
 import 'package:matrix/msc_extensions/msc_unpublished_custom_refresh_token_lifetime/msc_unpublished_custom_refresh_token_lifetime.dart';
@@ -41,6 +37,9 @@ import 'package:matrix/src/utils/run_benchmarked.dart';
 import 'package:matrix/src/utils/run_in_root.dart';
 import 'package:matrix/src/utils/sync_update_item_count.dart';
 import 'package:matrix/src/utils/try_get_push_rule.dart';
+import 'package:mime/mime.dart';
+import 'package:olm/olm.dart' as olm;
+import 'package:random_string/random_string.dart';
 
 typedef RoomSorter = int Function(Room a, Room b);
 
@@ -212,6 +211,10 @@ class Client extends MatrixApi {
     /// support.
     this.customRefreshTokenLifetime,
     this.typingIndicatorTimeout = const Duration(seconds: 30),
+
+    /// A function that takes the current lastEvent and a new lastEvent and
+    /// returns true if the new lastEvent should replace the current lastEvent.
+    this.shouldReplaceRoomLastEvent,
   })  : syncFilter = syncFilter ??
             Filter(
               room: RoomFilter(
@@ -2490,6 +2493,10 @@ class Client extends MatrixApi {
         // If last event is null or not a valid room preview event anyway,
         // just use this:
         if (room.lastEvent == null) {
+          if (shouldReplaceRoomLastEvent != null &&
+              !shouldReplaceRoomLastEvent!(null, event)) {
+            break;
+          }
           room.lastEvent = event;
           break;
         }
