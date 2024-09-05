@@ -23,7 +23,6 @@ import 'dart:typed_data';
 
 import 'package:collection/collection.dart';
 import 'package:hive/hive.dart';
-
 import 'package:matrix/encryption/utils/olm_session.dart';
 import 'package:matrix/encryption/utils/outbound_group_session.dart';
 import 'package:matrix/encryption/utils/ssss_cache.dart';
@@ -1626,6 +1625,25 @@ class HiveCollectionsDatabase extends DatabaseApi {
   @override
   Future<void> removeSpaceHierarchy(String spaceId) =>
       _spacesHierarchyBox.delete(spaceId);
+
+  @override
+  Future<void> storeWellKnown(DiscoveryInformation? discoveryInformation) {
+    if (discoveryInformation == null) {
+      return _clientBox.delete('discovery_information');
+    }
+    return _clientBox.put(
+      'discovery_information',
+      jsonEncode(discoveryInformation.toJson()),
+    );
+  }
+
+  @override
+  Future<DiscoveryInformation?> getWellKnown() async {
+    final rawDiscoveryInformation =
+        await _clientBox.get('discovery_information');
+    if (rawDiscoveryInformation == null) return null;
+    return DiscoveryInformation.fromJson(jsonDecode(rawDiscoveryInformation));
+  }
 
   @override
   Future<void> delete() => _collection.deleteFromDisk();

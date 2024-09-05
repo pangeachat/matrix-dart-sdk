@@ -1639,6 +1639,7 @@ class MatrixSdkDatabase extends DatabaseApi with DatabaseFileStorage {
   }
 
   @override
+  @override
   Future<GetSpaceHierarchyResponse?> getSpaceHierarchy(String spaceId) async {
     final raw_space_hierarchy = await _spacesHierarchyBox.get(spaceId);
     if (raw_space_hierarchy == null) return null;
@@ -1653,6 +1654,25 @@ class MatrixSdkDatabase extends DatabaseApi with DatabaseFileStorage {
   @override
   Future<void> removeSpaceHierarchy(String spaceId) =>
       _spacesHierarchyBox.delete(spaceId);
+
+  @override
+  Future<void> storeWellKnown(DiscoveryInformation? discoveryInformation) {
+    if (discoveryInformation == null) {
+      return _clientBox.delete('discovery_information');
+    }
+    return _clientBox.put(
+      'discovery_information',
+      jsonEncode(discoveryInformation.toJson()),
+    );
+  }
+
+  @override
+  Future<DiscoveryInformation?> getWellKnown() async {
+    final rawDiscoveryInformation =
+        await _clientBox.get('discovery_information');
+    if (rawDiscoveryInformation == null) return null;
+    return DiscoveryInformation.fromJson(jsonDecode(rawDiscoveryInformation));
+  }
 
   @override
   Future<void> delete() async {
