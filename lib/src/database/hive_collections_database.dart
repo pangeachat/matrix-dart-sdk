@@ -23,6 +23,7 @@ import 'dart:typed_data';
 
 import 'package:collection/collection.dart';
 import 'package:hive/hive.dart';
+
 import 'package:matrix/encryption/utils/olm_session.dart';
 import 'package:matrix/encryption/utils/outbound_group_session.dart';
 import 'package:matrix/encryption/utils/ssss_cache.dart';
