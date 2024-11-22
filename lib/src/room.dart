@@ -1100,7 +1100,8 @@ class Room {
           return null;
         } else {
           Logs()
-              .w('Problem while sending message: $e Try again in 1 seconds...');
+              .w('Problem while sending message test: $e Try again in 1 seconds...');
+          Logs().w('Stack: $s');
           await Future.delayed(Duration(seconds: 1));
         }
       }
