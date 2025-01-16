@@ -1758,8 +1758,13 @@ class MatrixSdkDatabase extends DatabaseApi with DatabaseFileStorage {
   }
 
   @override
-  Future<GetSpaceHierarchyResponse?> getSpaceHierarchy(String spaceId) async {
-    final raw_space_hierarchy = await _spacesHierarchyBox.get(spaceId);
+  Future<GetSpaceHierarchyResponse?> getSpaceHierarchy(
+    String spaceId,
+    int? maxDepth,
+    bool? suggestedOnly,
+  ) async {
+    final key = '$spaceId|$maxDepth|$suggestedOnly';
+    final raw_space_hierarchy = await _spacesHierarchyBox.get(key);
     if (raw_space_hierarchy == null) return null;
     return GetSpaceHierarchyResponse.fromJson(copyMap(raw_space_hierarchy));
   }
@@ -1767,13 +1772,23 @@ class MatrixSdkDatabase extends DatabaseApi with DatabaseFileStorage {
   @override
   Future<void> storeSpaceHierarchy(
     String spaceId,
+    int? maxDepth,
+    bool? suggestedOnly,
     GetSpaceHierarchyResponse hierarchy,
-  ) =>
-      _spacesHierarchyBox.put(spaceId, hierarchy.toJson());
+  ) {
+    final key = '$spaceId|$maxDepth|$suggestedOnly';
+    return _spacesHierarchyBox.put(key, hierarchy.toJson());
+  }
 
   @override
-  Future<void> removeSpaceHierarchy(String spaceId) =>
-      _spacesHierarchyBox.delete(spaceId);
+  Future<void> removeSpaceHierarchy(String spaceId) async {
+    final keys = await _spacesHierarchyBox.getAllKeys();
+    for (final key in keys) {
+      if (key.startsWith(spaceId)) {
+        await _spacesHierarchyBox.delete(spaceId);
+      }
+    }
+  }
 
   @override
   Future<void> storeWellKnown(DiscoveryInformation? discoveryInformation) {

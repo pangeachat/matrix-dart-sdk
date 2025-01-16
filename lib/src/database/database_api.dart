@@ -346,10 +346,16 @@ abstract class DatabaseApi {
 
   Future<CachedPresence?> getPresence(String userId);
 
-  Future<GetSpaceHierarchyResponse?> getSpaceHierarchy(String spaceId);
+  Future<GetSpaceHierarchyResponse?> getSpaceHierarchy(
+    String spaceId,
+    int? maxDepth,
+    bool? suggestedOnly,
+  );
 
   Future<void> storeSpaceHierarchy(
     String spaceId,
+    int? maxDepth,
+    bool? suggestedOnly,
     GetSpaceHierarchyResponse hierarchy,
   );
 
