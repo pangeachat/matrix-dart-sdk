@@ -3924,7 +3924,11 @@ class Client extends MatrixApi {
     int? maxDepth,
     String? from,
   }) async {
-    final cachedResponse = await database?.getSpaceHierarchy(roomId);
+    final cachedResponse = await database?.getSpaceHierarchy(
+      roomId,
+      maxDepth,
+      suggestedOnly,
+    );
     if (cachedResponse == null) {
       final response = await super.getSpaceHierarchy(
         roomId,
@@ -3933,10 +3937,17 @@ class Client extends MatrixApi {
         maxDepth: maxDepth,
         from: from,
       );
-      await database?.storeSpaceHierarchy(roomId, response);
+      await database?.storeSpaceHierarchy(
+        roomId,
+        maxDepth,
+        suggestedOnly,
+        response,
+      );
       return response;
     }
-    if (from != null) {
+    if (cachedResponse.nextBatch != null &&
+        from != null &&
+        cachedResponse.nextBatch == from) {
       final response = await super.getSpaceHierarchy(
         roomId,
         suggestedOnly: suggestedOnly,
@@ -3956,6 +3967,8 @@ class Client extends MatrixApi {
       // store new response
       await database?.storeSpaceHierarchy(
         roomId,
+        maxDepth,
+        suggestedOnly,
         GetSpaceHierarchyResponse(
           rooms: newRooms,
           nextBatch: response.nextBatch,

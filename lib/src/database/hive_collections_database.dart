@@ -1732,20 +1732,35 @@ class HiveCollectionsDatabase extends DatabaseApi {
   }
 
   @override
-  Future<GetSpaceHierarchyResponse?> getSpaceHierarchy(String spaceId) async {
-    return await _spacesHierarchyBox.get(spaceId);
+  Future<GetSpaceHierarchyResponse?> getSpaceHierarchy(
+    String spaceId,
+    int? maxDepth,
+    bool? suggestedOnly,
+  ) async {
+    final key = '$spaceId|$maxDepth|$suggestedOnly';
+    return await _spacesHierarchyBox.get(key);
   }
 
   @override
   Future<void> storeSpaceHierarchy(
     String spaceId,
+    int? maxDepth,
+    bool? suggestedOnly,
     GetSpaceHierarchyResponse hierarchy,
-  ) =>
-      _spacesHierarchyBox.put(spaceId, hierarchy);
+  ) {
+    final key = '$spaceId|$maxDepth|$suggestedOnly';
+    return _spacesHierarchyBox.put(key, hierarchy);
+  }
 
   @override
-  Future<void> removeSpaceHierarchy(String spaceId) =>
-      _spacesHierarchyBox.delete(spaceId);
+  Future<void> removeSpaceHierarchy(String spaceId) async {
+    final keys = await _spacesHierarchyBox.getAllKeys();
+    for (final key in keys) {
+      if (key.startsWith(spaceId)) {
+        await _spacesHierarchyBox.delete(spaceId);
+      }
+    }
+  }
 
   @override
   Future<void> storeWellKnown(DiscoveryInformation? discoveryInformation) {
