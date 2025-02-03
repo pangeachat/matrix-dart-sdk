@@ -110,6 +110,8 @@ class Client extends MatrixApi {
 
   String? get syncFilterId => _syncFilterId;
 
+  final bool convertLinebreaksInFormatting;
+
   final ComputeCallback? compute;
 
   @Deprecated('Use [nativeImplementations] instead')
@@ -240,6 +242,10 @@ class Client extends MatrixApi {
     /// A function that takes the current lastEvent and a new lastEvent and
     /// returns true if the new lastEvent should replace the current lastEvent.
     this.shouldReplaceRoomLastEvent,
+
+    /// When sending a formatted message, converting linebreaks in markdown to
+    /// <br/> tags:
+    this.convertLinebreaksInFormatting = true,
   })  : syncFilter = syncFilter ??
             Filter(
               room: RoomFilter(
@@ -1207,7 +1213,7 @@ class Client extends MatrixApi {
           roomAccountData: roomUpdate.accountData
                   ?.asMap()
                   .map((k, v) => MapEntry(v.type, v)) ??
-              <String, BasicRoomEvent>{},
+              <String, BasicEvent>{},
         );
     // Set membership of room to leave, in the case we got a left room passed, otherwise
     // the left room would have still membership join, which would be wrong for the setState later
@@ -1654,7 +1660,27 @@ class Client extends MatrixApi {
   /// the app receives a new synchronization, this event is called for every signal
   /// to update the GUI. For example, for a new message, it is called:
   /// onRoomEvent( "m.room.message", "!chat_id:server.com", "timeline", {sender: "@bob:server.com", body: "Hello world"} )
+  // ignore: deprecated_member_use_from_same_package
+  @Deprecated(
+    'Use `onTimelineEvent`, `onHistoryEvent` or `onNotification` instead.',
+  )
   final CachedStreamController<EventUpdate> onEvent = CachedStreamController();
+
+  /// A stream of all incoming timeline events for all rooms **after**
+  /// decryption. The events are coming in the same order as they come down from
+  /// the sync.
+  final CachedStreamController<Event> onTimelineEvent =
+      CachedStreamController();
+
+  /// A stream for all incoming historical timeline events **after** decryption
+  /// triggered by a `Room.requestHistory()` call or a method which calls it.
+  final CachedStreamController<Event> onHistoryEvent = CachedStreamController();
+
+  /// A stream of incoming Events **after** decryption which **should** trigger
+  /// a (local) notification. This includes timeline events but also
+  /// invite states. Excluded events are those sent by the user themself or
+  /// not matching the push rules.
+  final CachedStreamController<Event> onNotification = CachedStreamController();
 
   /// The onToDeviceEvent is called when there comes a new to device event. It is
   /// already decrypted if necessary.
@@ -1896,11 +1922,9 @@ class Client extends MatrixApi {
     if (storeInDatabase) {
       await database?.transaction(() async {
         await database.storeEventUpdate(
-          EventUpdate(
-            roomID: roomId,
-            type: EventUpdateType.timeline,
-            content: event.toJson(),
-          ),
+          roomId,
+          event,
+          EventUpdateType.timeline,
           this,
         );
       });
@@ -2481,10 +2505,10 @@ class Client extends MatrixApi {
       onPresenceChanged.add(cachedPresence);
       await database?.storePresence(newPresence.senderId, cachedPresence);
     }
-    for (final newAccountData in sync.accountData ?? []) {
+    for (final newAccountData in sync.accountData ?? <BasicEvent>[]) {
       await database?.storeAccountData(
         newAccountData.type,
-        jsonEncode(newAccountData.content),
+        newAccountData.content,
       );
       accountData[newAccountData.type] = newAccountData;
       // ignore: deprecated_member_use_from_same_package
@@ -2566,19 +2590,19 @@ class Client extends MatrixApi {
 
       final room = getRoomById(roomId);
       if (room != null) {
-        final List<BasicEvent> events = [];
+        final events = <Event>[];
         for (final event in _eventsPendingDecryption) {
-          if (event.event.roomID != roomId) continue;
+          if (event.event.room.id != roomId) continue;
           if (!sessionIds.contains(
-            event.event.content['content']?['session_id'],
+            event.event.content.tryGet<String>('session_id'),
           )) {
             continue;
           }
 
-          final decryptedEvent = await event.event.decrypt(room);
-          if (decryptedEvent.content.tryGet<String>('type') !=
-              EventTypes.Encrypted) {
-            events.add(BasicEvent.fromJson(decryptedEvent.content));
+          final decryptedEvent =
+              await encryption!.decryptRoomEvent(event.event);
+          if (decryptedEvent.type != EventTypes.Encrypted) {
+            events.add(decryptedEvent);
           }
         }
 
@@ -2658,11 +2682,10 @@ class Client extends MatrixApi {
 
         final accountData = syncRoomUpdate.accountData;
         if (accountData != null && accountData.isNotEmpty) {
-          await _handleRoomEvents(
-            room,
-            accountData,
-            EventUpdateType.accountData,
-          );
+          for (final event in accountData) {
+            await database?.storeRoomAccountData(room.id, event);
+            room.roomAccountData[event.type] = event;
+          }
         }
       }
 
@@ -2678,12 +2701,9 @@ class Client extends MatrixApi {
         }
         final accountData = syncRoomUpdate.accountData;
         if (accountData != null && accountData.isNotEmpty) {
-          await _handleRoomEvents(
-            room,
-            accountData,
-            EventUpdateType.accountData,
-            store: false,
-          );
+          for (final event in accountData) {
+            room.roomAccountData[event.type] = event;
+          }
         }
         final state = syncRoomUpdate.state;
         if (state != null && state.isNotEmpty) {
@@ -2706,11 +2726,11 @@ class Client extends MatrixApi {
     }
   }
 
-  Future<void> _handleEphemerals(Room room, List<BasicRoomEvent> events) async {
+  Future<void> _handleEphemerals(Room room, List<BasicEvent> events) async {
     final List<ReceiptEventContent> receipts = [];
 
     for (final event in events) {
-      await _handleRoomEvents(room, [event], EventUpdateType.ephemeral);
+      room.setEphemeral(event);
 
       // Receipt events are deltas between two states. We will create a
       // fake room account data event for this and store the difference
@@ -2727,17 +2747,12 @@ class Client extends MatrixApi {
         await receiptStateContent.update(e, room);
       }
 
-      await _handleRoomEvents(
-        room,
-        [
-          BasicRoomEvent(
-            type: LatestReceiptState.eventType,
-            roomId: room.id,
-            content: receiptStateContent.toJson(),
-          ),
-        ],
-        EventUpdateType.accountData,
+      final event = BasicEvent(
+        type: LatestReceiptState.eventType,
+        content: receiptStateContent.toJson(),
       );
+      await database?.storeRoomAccountData(room.id, event);
+      room.roomAccountData[event.type] = event;
     }
   }
 
@@ -2746,7 +2761,7 @@ class Client extends MatrixApi {
 
   Future<void> _handleRoomEvents(
     Room room,
-    List<BasicEvent> events,
+    List<StrippedStateEvent> events,
     EventUpdateType type, {
     bool store = true,
   }) async {
@@ -2754,7 +2769,7 @@ class Client extends MatrixApi {
     // we collect them first before we handle them.
     final callEvents = <Event>[];
 
-    for (final event in events) {
+    for (var event in events) {
       // The client must ignore any new m.room.encryption event to prevent
       // man-in-the-middle attacks!
       if ((event.type == EventTypes.Encryption &&
@@ -2767,27 +2782,24 @@ class Client extends MatrixApi {
         continue;
       }
 
-      var update =
-          EventUpdate(roomID: room.id, type: type, content: event.toJson());
-      if (event.type == EventTypes.Encrypted && encryptionEnabled) {
-        update = await update.decrypt(room);
+      if (event is MatrixEvent &&
+          event.type == EventTypes.Encrypted &&
+          encryptionEnabled) {
+        event = await encryption!.decryptRoomEvent(
+          Event.fromMatrixEvent(event, room),
+          updateType: type,
+        );
 
-        // if the event failed to decrypt, add it to the queue
-        if (update.content.tryGet<String>('type') == EventTypes.Encrypted) {
+        if (event.type == EventTypes.Encrypted) {
+          // if the event failed to decrypt, add it to the queue
           _eventsPendingDecryption.add(
-            _EventPendingDecryption(
-              EventUpdate(
-                roomID: update.roomID,
-                type: EventUpdateType.decryptedTimelineQueue,
-                content: update.content,
-              ),
-            ),
+            _EventPendingDecryption(Event.fromMatrixEvent(event, room)),
           );
         }
       }
 
       // Any kind of member change? We should invalidate the profile then:
-      if (event is StrippedStateEvent && event.type == EventTypes.RoomMember) {
+      if (event.type == EventTypes.RoomMember) {
         final userId = event.stateKey;
         if (userId != null) {
           // We do not re-request the profile here as this would lead to
@@ -2809,15 +2821,63 @@ class Client extends MatrixApi {
           room.setState(user);
         }
       }
+      _updateRoomsByEventUpdate(room, event, type);
+      if (store) {
+        await database?.storeEventUpdate(room.id, event, type, this);
+      }
+      if (event is MatrixEvent && encryptionEnabled) {
+        await encryption?.handleEventUpdate(
+          Event.fromMatrixEvent(event, room),
+          type,
+        );
+      }
 
-      _updateRoomsByEventUpdate(room, update);
-      if (type != EventUpdateType.ephemeral && store) {
-        await database?.storeEventUpdate(update, this);
+      // ignore: deprecated_member_use_from_same_package
+      onEvent.add(
+        // ignore: deprecated_member_use_from_same_package
+        EventUpdate(
+          roomID: room.id,
+          type: type,
+          content: event.toJson(),
+        ),
+      );
+      if (event is MatrixEvent) {
+        final timelineEvent = Event.fromMatrixEvent(event, room);
+        switch (type) {
+          case EventUpdateType.timeline:
+            onTimelineEvent.add(timelineEvent);
+            if (prevBatch != null &&
+                timelineEvent.senderId != userID &&
+                room.notificationCount > 0 &&
+                pushruleEvaluator.match(timelineEvent).notify) {
+              onNotification.add(timelineEvent);
+            }
+            break;
+          case EventUpdateType.history:
+            onHistoryEvent.add(timelineEvent);
+            break;
+          default:
+            break;
+        }
       }
-      if (encryptionEnabled) {
-        await encryption?.handleEventUpdate(update);
+
+      // Trigger local notification for a new invite:
+      if (prevBatch != null &&
+          type == EventUpdateType.inviteState &&
+          event.type == EventTypes.RoomMember &&
+          event.stateKey == userID) {
+        onNotification.add(
+          Event(
+            type: event.type,
+            eventId: 'invite_for_${room.id}',
+            senderId: event.senderId,
+            originServerTs: DateTime.now(),
+            stateKey: event.stateKey,
+            content: event.content,
+            room: room,
+          ),
+        );
       }
-      onEvent.add(update);
 
       if (event.type == EventTypes.SpaceChild) {
         await database?.removeSpaceHierarchy(room.id);
@@ -2826,11 +2886,9 @@ class Client extends MatrixApi {
       if (prevBatch != null &&
           (type == EventUpdateType.timeline ||
               type == EventUpdateType.decryptedTimelineQueue)) {
-        if ((update.content
-                .tryGet<String>('type')
-                ?.startsWith(CallConstants.callEventsRegxp) ??
-            false)) {
-          final callEvent = Event.fromJson(update.content, room);
+        if (event is MatrixEvent &&
+            (event.type.startsWith(CallConstants.callEventsRegxp))) {
+          final callEvent = Event.fromMatrixEvent(event, room);
           callEvents.add(callEvent);
         }
       }
@@ -2930,23 +2988,34 @@ class Client extends MatrixApi {
     return room;
   }
 
-  void _updateRoomsByEventUpdate(Room room, EventUpdate eventUpdate) {
-    if (eventUpdate.type == EventUpdateType.history) return;
+  void _updateRoomsByEventUpdate(
+    Room room,
+    StrippedStateEvent eventUpdate,
+    EventUpdateType type,
+  ) {
+    if (type == EventUpdateType.history) return;
 
-    switch (eventUpdate.type) {
+    switch (type) {
       case EventUpdateType.inviteState:
-        room.setState(StrippedStateEvent.fromJson(eventUpdate.content));
+        room.setState(eventUpdate);
         break;
       case EventUpdateType.state:
       case EventUpdateType.timeline:
-        final event = Event.fromJson(eventUpdate.content, room);
+        if (eventUpdate is! MatrixEvent) {
+          Logs().wtf(
+            'Passed in a ${eventUpdate.runtimeType} with $type to _updateRoomsByEventUpdate(). This should never happen!',
+          );
+          assert(eventUpdate is! MatrixEvent);
+          return;
+        }
+        final event = Event.fromMatrixEvent(eventUpdate, room);
 
         // Update the room state:
         if (event.stateKey != null &&
             (!room.partial || importantStateEvents.contains(event.type))) {
           room.setState(event);
         }
-        if (eventUpdate.type != EventUpdateType.timeline) break;
+        if (type != EventUpdateType.timeline) break;
 
         // If last event is null or not a valid room preview event anyway,
         // just use this:
@@ -2994,13 +3063,6 @@ class Client extends MatrixApi {
         room.lastEvent = event;
 
         break;
-      case EventUpdateType.accountData:
-        room.roomAccountData[eventUpdate.content['type']] =
-            BasicRoomEvent.fromJson(eventUpdate.content);
-        break;
-      case EventUpdateType.ephemeral:
-        room.setEphemeral(BasicRoomEvent.fromJson(eventUpdate.content));
-        break;
       case EventUpdateType.history:
       case EventUpdateType.decryptedTimelineQueue:
         break;
@@ -3031,8 +3093,8 @@ class Client extends MatrixApi {
             a.notificationCount != b.notificationCount) {
           return b.notificationCount.compareTo(a.notificationCount);
         } else {
-          return b.timeCreated.millisecondsSinceEpoch
-              .compareTo(a.timeCreated.millisecondsSinceEpoch);
+          return b.latestEventReceivedTime.millisecondsSinceEpoch
+              .compareTo(a.latestEventReceivedTime.millisecondsSinceEpoch);
         }
       };
 
@@ -4037,9 +4099,9 @@ class FileTooBigMatrixException extends MatrixException {
   int maxFileSize;
 
   static String _formatFileSize(int size) {
-    if (size < 1024) return '$size B';
-    final i = (log(size) / log(1024)).floor();
-    final num = (size / pow(1024, i));
+    if (size < 1000) return '$size B';
+    final i = (log(size) / log(1000)).floor();
+    final num = (size / pow(1000, i));
     final round = num.round();
     final numString = round < 10
         ? num.toStringAsFixed(2)
@@ -4072,7 +4134,7 @@ class ArchivedRoom {
 class _EventPendingDecryption {
   DateTime addedAt = DateTime.now();
 
-  EventUpdate event;
+  Event event;
 
   bool get timedOut =>
       addedAt.add(Duration(minutes: 5)).isBefore(DateTime.now());
