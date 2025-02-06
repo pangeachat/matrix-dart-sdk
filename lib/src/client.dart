@@ -1086,6 +1086,17 @@ class Client extends MatrixApi {
     return newCachedProfile;
   }
 
+  @override
+  Future<void> setUserProfile(String userId, String key, Object value) async {
+    try {
+      await super.setUserProfile(userId, key, value);
+    } catch (e) {
+      Logs().d('Unable to set profile for $userId', e);
+    } finally {
+      await database?.markUserProfileAsOutdated(userId);
+    }
+  }
+
   final Map<String, Future<ProfileInformation>> _userProfileRequests = {};
 
   final CachedStreamController<String> onUserProfileUpdate =

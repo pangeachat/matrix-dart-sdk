@@ -2772,6 +2772,23 @@ class Api {
     return ProfileInformation.fromJson(json as Map<String, Object?>);
   }
 
+  Future<void> setUserProfile(String userId, String key, Object value) async {
+    final requestUri = Uri(
+      path:
+          '_matrix/client/unstable/uk.tcpip.msc4133/profile/${Uri.encodeComponent(userId)}/${Uri.encodeComponent(key)}',
+    );
+    final request = Request('PUT', baseUri!.resolveUri(requestUri));
+    request.headers['authorization'] = 'Bearer ${bearerToken!}';
+    request.headers['content-type'] = 'application/json';
+    request.bodyBytes = utf8.encode(jsonEncode({key: value}));
+    final response = await httpClient.send(request);
+    final responseBody = await response.stream.toBytes();
+    if (response.statusCode != 200) unexpectedResponse(response, responseBody);
+    final responseString = utf8.decode(responseBody);
+    final json = jsonDecode(responseString);
+    return ignore(json);
+  }
+
   /// Get the user's avatar URL. This API may be used to fetch the user's
   /// own avatar URL or to query the URL of other users; either locally or
   /// on remote homeservers.

@@ -2506,19 +2506,26 @@ class ProfileInformation {
   ProfileInformation({
     this.avatarUrl,
     this.displayname,
+    this.additionalProperties = const {},
   });
 
   ProfileInformation.fromJson(Map<String, Object?> json)
       : avatarUrl = ((v) =>
             v != null ? Uri.parse(v as String) : null)(json['avatar_url']),
         displayname =
-            ((v) => v != null ? v as String : null)(json['displayname']);
+            ((v) => v != null ? v as String : null)(json['displayname']),
+        additionalProperties = Map.fromEntries(
+          json.entries
+              .where((e) => !['avatar_url', 'displayname'].contains(e.key))
+              .map((e) => MapEntry(e.key, e.value)),
+        );
   Map<String, Object?> toJson() {
     final avatarUrl = this.avatarUrl;
     final displayname = this.displayname;
     return {
       if (avatarUrl != null) 'avatar_url': avatarUrl.toString(),
       if (displayname != null) 'displayname': displayname,
+      ...additionalProperties,
     };
   }
 
@@ -2527,6 +2534,8 @@ class ProfileInformation {
 
   /// The user's display name if they have set one, otherwise not present.
   String? displayname;
+
+  Map<String, Object?> additionalProperties;
 
   @dart.override
   bool operator ==(Object other) =>
