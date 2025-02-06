@@ -11,6 +11,7 @@ class CachedProfileInformation extends ProfileInformation {
   }) : super(
           avatarUrl: profile.avatarUrl,
           displayname: profile.displayname,
+          additionalProperties: profile.additionalProperties,
         );
 
   factory CachedProfileInformation.fromJson(Map<String, Object?> json) =>
