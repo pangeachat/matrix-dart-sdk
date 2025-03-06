@@ -629,6 +629,7 @@ class Room {
     String msgtype = MessageTypes.Text,
     String? threadRootEventId,
     String? threadLastEventId,
+    StringBuffer? commandStdout,
   }) {
     if (parseCommands) {
       return client.parseAndRunCommand(
@@ -639,6 +640,7 @@ class Room {
         txid: txid,
         threadRootEventId: threadRootEventId,
         threadLastEventId: threadLastEventId,
+        stdout: commandStdout,
       );
     }
     final event = <String, dynamic>{
