@@ -3997,62 +3997,20 @@ class Client extends MatrixApi {
     int? maxDepth,
     String? from,
   }) async {
-    final cachedResponse = await database?.getSpaceHierarchy(
+    final response = await super.getSpaceHierarchy(
+      roomId,
+      suggestedOnly: suggestedOnly,
+      limit: limit,
+      maxDepth: maxDepth,
+      from: from,
+    );
+    await database?.storeSpaceHierarchy(
       roomId,
       maxDepth,
       suggestedOnly,
+      response,
     );
-    if (cachedResponse == null) {
-      final response = await super.getSpaceHierarchy(
-        roomId,
-        suggestedOnly: suggestedOnly,
-        limit: limit,
-        maxDepth: maxDepth,
-        from: from,
-      );
-      await database?.storeSpaceHierarchy(
-        roomId,
-        maxDepth,
-        suggestedOnly,
-        response,
-      );
-      return response;
-    }
-    if (cachedResponse.nextBatch != null &&
-        from != null &&
-        cachedResponse.nextBatch == from) {
-      final response = await super.getSpaceHierarchy(
-        roomId,
-        suggestedOnly: suggestedOnly,
-        limit: limit,
-        maxDepth: maxDepth,
-        from: from,
-      );
-      // extend existing response, ensure no duplicates. Unique by roomId
-      final existingRoomIds =
-          cachedResponse.rooms.map((room) => room.roomId).toSet();
-      final newRooms = cachedResponse.rooms;
-      for (final room in response.rooms) {
-        if (!existingRoomIds.contains(room.roomId)) {
-          newRooms.add(room);
-        }
-      }
-      // store new response
-      await database?.storeSpaceHierarchy(
-        roomId,
-        maxDepth,
-        suggestedOnly,
-        GetSpaceHierarchyResponse(
-          rooms: newRooms,
-          nextBatch: response.nextBatch,
-        ),
-      );
-
-      // not returning new response since UI is union-ing the responses rooms
-      // returning new rooms will cause duplicates
-      return response;
-    }
-    return cachedResponse;
+    return response;
   }
 }
 
