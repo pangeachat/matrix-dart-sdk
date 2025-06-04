@@ -246,6 +246,7 @@ class Client extends MatrixApi {
     /// When sending a formatted message, converting linebreaks in markdown to
     /// <br/> tags:
     this.convertLinebreaksInFormatting = true,
+    this.dehydratedDeviceDisplayName = 'Dehydrated Device',
   })  : syncFilter = syncFilter ??
             Filter(
               room: RoomFilter(
@@ -383,6 +384,8 @@ class Client extends MatrixApi {
 
   bool enableDehydratedDevices = false;
 
+  final String dehydratedDeviceDisplayName;
+
   /// Whether read receipts are sent as public receipts by default or just as private receipts.
   bool receiptsPublicByDefault = true;
 
@@ -458,7 +461,8 @@ class Client extends MatrixApi {
   Map<String, dynamic> get directChats =>
       _accountData['m.direct']?.content ?? {};
 
-  /// Returns the (first) room ID from the store which is a private chat with the user [userId].
+  /// Returns the first room ID from the store (the room with the latest event)
+  /// which is a private chat with the user [userId].
   /// Returns null if there is none.
   String? getDirectChatFromUserId(String userId) {
     final directChats = _accountData['m.direct']?.content[userId];
@@ -555,10 +559,10 @@ class Client extends MatrixApi {
       final versions = await getVersions();
       if (!versions.versions
           .any((version) => supportedVersions.contains(version))) {
-        throw BadServerVersionsException(
-          versions.versions.toSet(),
-          supportedVersions,
+        Logs().w(
+          'Server supports the versions: ${versions.toString()} but this application is only compatible with ${supportedVersions.toString()}.',
         );
+        assert(false);
       }
 
       final loginTypes = await getLoginFlows() ?? [];
@@ -588,7 +592,13 @@ class Client extends MatrixApi {
   /// The result of this call is stored in [wellKnown] for later use at runtime.
   @override
   Future<DiscoveryInformation> getWellknown() async {
-    final wellKnown = await super.getWellknown();
+    final wellKnownResponse = await httpClient.get(
+      Uri.https(userID!.domain!, '/.well-known/matrix/client'),
+    );
+    final wellKnown = DiscoveryInformation.fromJson(
+      jsonDecode(utf8.decode(wellKnownResponse.bodyBytes))
+          as Map<String, Object?>,
+    );
 
     // do not reset the well known here, so super call
     super.homeserver = wellKnown.mHomeserver.baseUrl.stripTrailingSlash();
@@ -790,10 +800,11 @@ class Client extends MatrixApi {
     bool waitForSync = true,
     Map<String, dynamic>? powerLevelContentOverride,
     CreateRoomPreset? preset = CreateRoomPreset.trustedPrivateChat,
+    bool skipExistingChat = false,
   }) async {
     // Try to find an existing direct chat
     final directChatRoomId = getDirectChatFromUserId(mxid);
-    if (directChatRoomId != null) {
+    if (directChatRoomId != null && !skipExistingChat) {
       final room = getRoomById(directChatRoomId);
       if (room != null) {
         if (room.membership == Membership.join) {
@@ -1658,7 +1669,23 @@ class Client extends MatrixApi {
     return pushrules != null ? TryGetPushRule.tryFromJson(pushrules) : null;
   }
 
-  static const Set<String> supportedVersions = {'v1.1', 'v1.2'};
+  static const Set<String> supportedVersions = {
+    'v1.1',
+    'v1.2',
+    'v1.3',
+    'v1.4',
+    'v1.5',
+    'v1.6',
+    'v1.7',
+    'v1.8',
+    'v1.9',
+    'v1.10',
+    'v1.11',
+    'v1.12',
+    'v1.13',
+    'v1.14',
+  };
+
   static const List<String> supportedDirectEncryptionAlgorithms = [
     AlgorithmTypes.olmV1Curve25519AesSha2,
   ];
@@ -2269,8 +2296,8 @@ class Client extends MatrixApi {
 
   /// Immediately start a sync and wait for completion.
   /// If there is an active sync already, wait for the active sync instead.
-  Future<void> oneShotSync() {
-    return _sync();
+  Future<void> oneShotSync({Duration? timeout}) {
+    return _sync(timeout: timeout);
   }
 
   /// Pass a timeout to set how long the server waits before sending an empty response.
@@ -2668,8 +2695,27 @@ class Client extends MatrixApi {
       if (syncRoomUpdate is JoinedRoomUpdate) {
         final state = syncRoomUpdate.state;
 
+        // If we are receiving states when fetching history we need to check if
+        // we are not overwriting a newer state.
+        if (direction == Direction.b) {
+          await room.postLoad();
+          state?.removeWhere((state) {
+            final existingState =
+                room.getState(state.type, state.stateKey ?? '');
+            if (existingState == null) return false;
+            if (existingState is User) {
+              return existingState.originServerTs
+                      ?.isAfter(state.originServerTs) ??
+                  true;
+            }
+            if (existingState is MatrixEvent) {
+              return existingState.originServerTs.isAfter(state.originServerTs);
+            }
+            return true;
+          });
+        }
+
         if (state != null && state.isNotEmpty) {
-          // TODO: This method seems to be comperatively slow for some updates
           await _handleRoomEvents(
             room,
             state,
@@ -2832,7 +2878,7 @@ class Client extends MatrixApi {
           room.setState(user);
         }
       }
-      _updateRoomsByEventUpdate(room, event, type);
+      await _updateRoomsByEventUpdate(room, event, type);
       if (store) {
         await database?.storeEventUpdate(room.id, event, type, this);
       }
@@ -2971,14 +3017,18 @@ class Client extends MatrixApi {
                 (chatUpdate.unreadNotifications?.highlightCount ?? 0) ||
             chatUpdate.summary != null ||
             chatUpdate.timeline?.prevBatch != null)) {
+      /// 1. [InvitedRoomUpdate] doesn't have prev_batch, so we want to set it in case
+      ///    the room first appeared in sync update when membership was invite.
+      /// 2. We also reset the prev_batch if the timeline is limited.
+      if (rooms[roomIndex].membership == Membership.invite ||
+          chatUpdate.timeline?.limited == true) {
+        rooms[roomIndex].prev_batch = chatUpdate.timeline?.prevBatch;
+      }
       rooms[roomIndex].membership = membership;
       rooms[roomIndex].notificationCount =
           chatUpdate.unreadNotifications?.notificationCount ?? 0;
       rooms[roomIndex].highlightCount =
           chatUpdate.unreadNotifications?.highlightCount ?? 0;
-      if (chatUpdate.timeline?.prevBatch != null) {
-        rooms[roomIndex].prev_batch = chatUpdate.timeline?.prevBatch;
-      }
 
       final summary = chatUpdate.summary;
       if (summary != null) {
@@ -2999,11 +3049,11 @@ class Client extends MatrixApi {
     return room;
   }
 
-  void _updateRoomsByEventUpdate(
+  Future<void> _updateRoomsByEventUpdate(
     Room room,
     StrippedStateEvent eventUpdate,
     EventUpdateType type,
-  ) {
+  ) async {
     if (type == EventUpdateType.history) return;
 
     switch (type) {
@@ -3043,11 +3093,27 @@ class Client extends MatrixApi {
         if (event.type == EventTypes.Redaction &&
             ({
               room.lastEvent?.eventId,
-              room.lastEvent?.relationshipEventId,
             }.contains(
               event.redacts ?? event.content.tryGet<String>('redacts'),
             ))) {
           room.lastEvent?.setRedactionEvent(event);
+          break;
+        }
+        // Is this event redacting the last event which is a edited event.
+        final relationshipEventId = room.lastEvent?.relationshipEventId;
+        if (relationshipEventId != null &&
+            relationshipEventId ==
+                (event.redacts ?? event.content.tryGet<String>('redacts')) &&
+            event.type == EventTypes.Redaction &&
+            room.lastEvent?.relationshipType == RelationshipTypes.edit) {
+          final originalEvent = await database?.getEventById(
+                relationshipEventId,
+                room,
+              ) ??
+              room.lastEvent;
+          // Manually remove the data as it's already in cache until relogin.
+          originalEvent?.setRedactionEvent(event);
+          room.lastEvent = originalEvent;
           break;
         }
 
@@ -3668,7 +3734,6 @@ class Client extends MatrixApi {
   }) =>
       super.joinRoom(
         roomIdOrAlias,
-        serverName: via ?? serverName,
         via: via ?? serverName,
         reason: reason,
         thirdPartySigned: thirdPartySigned,
@@ -3997,62 +4062,20 @@ class Client extends MatrixApi {
     int? maxDepth,
     String? from,
   }) async {
-    final cachedResponse = await database?.getSpaceHierarchy(
+    final response = await super.getSpaceHierarchy(
+      roomId,
+      suggestedOnly: suggestedOnly,
+      limit: limit,
+      maxDepth: maxDepth,
+      from: from,
+    );
+    await database?.storeSpaceHierarchy(
       roomId,
       maxDepth,
       suggestedOnly,
+      response,
     );
-    if (cachedResponse == null) {
-      final response = await super.getSpaceHierarchy(
-        roomId,
-        suggestedOnly: suggestedOnly,
-        limit: limit,
-        maxDepth: maxDepth,
-        from: from,
-      );
-      await database?.storeSpaceHierarchy(
-        roomId,
-        maxDepth,
-        suggestedOnly,
-        response,
-      );
-      return response;
-    }
-    if (cachedResponse.nextBatch != null &&
-        from != null &&
-        cachedResponse.nextBatch == from) {
-      final response = await super.getSpaceHierarchy(
-        roomId,
-        suggestedOnly: suggestedOnly,
-        limit: limit,
-        maxDepth: maxDepth,
-        from: from,
-      );
-      // extend existing response, ensure no duplicates. Unique by roomId
-      final existingRoomIds =
-          cachedResponse.rooms.map((room) => room.roomId).toSet();
-      final newRooms = cachedResponse.rooms;
-      for (final room in response.rooms) {
-        if (!existingRoomIds.contains(room.roomId)) {
-          newRooms.add(room);
-        }
-      }
-      // store new response
-      await database?.storeSpaceHierarchy(
-        roomId,
-        maxDepth,
-        suggestedOnly,
-        GetSpaceHierarchyResponse(
-          rooms: newRooms,
-          nextBatch: response.nextBatch,
-        ),
-      );
-
-      // not returning new response since UI is union-ing the responses rooms
-      // returning new rooms will cause duplicates
-      return response;
-    }
-    return cachedResponse;
+    return response;
   }
 }
 
@@ -4083,16 +4106,6 @@ enum SyncStatus {
   cleaningUp,
   finished,
   error,
-}
-
-class BadServerVersionsException implements Exception {
-  final Set<String> serverVersions, supportedVersions;
-
-  BadServerVersionsException(this.serverVersions, this.supportedVersions);
-
-  @override
-  String toString() =>
-      'Server supports the versions: ${serverVersions.toString()} but this application is only compatible with ${supportedVersions.toString()}.';
 }
 
 class BadServerLoginTypesException implements Exception {

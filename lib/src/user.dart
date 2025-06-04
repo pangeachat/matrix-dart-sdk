@@ -18,16 +18,27 @@
 
 import 'package:matrix/matrix.dart';
 
-/// Represents a Matrix User which may be a participant in a Matrix Room.
+/// Represents a user in the context of a Matrix room, not a global user profile.
+///
+/// This class extends [StrippedStateEvent] to handle room-specific user state,
+/// including membership status, display name, and avatar within that room.
+/// The user information is derived from room member state events.
+///
+/// For example, a user may have different display names or avatars in different rooms,
+/// and this class represents that room-specific view of the user rather than their
+/// global profile.
+///
 class User extends StrippedStateEvent {
   final Room room;
   final Map<String, Object?>? prevContent;
+  final DateTime? originServerTs;
 
   factory User(
     String id, {
     String? membership,
     String? displayName,
     String? avatarUrl,
+    DateTime? originServerTs,
     required Room room,
   }) {
     return User.fromState(
@@ -40,6 +51,7 @@ class User extends StrippedStateEvent {
       },
       typeKey: EventTypes.RoomMember,
       room: room,
+      originServerTs: originServerTs,
     );
   }
 
@@ -49,6 +61,7 @@ class User extends StrippedStateEvent {
     required String typeKey,
     required super.senderId,
     required this.room,
+    this.originServerTs,
     this.prevContent,
   }) : super(
           type: typeKey,
@@ -254,5 +267,6 @@ extension FromStrippedStateEventExtension on StrippedStateEvent {
         typeKey: type,
         senderId: senderId,
         room: room,
+        originServerTs: null,
       );
 }
