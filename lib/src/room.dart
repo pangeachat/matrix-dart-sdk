@@ -72,7 +72,12 @@ class Room {
   /// Key-Value store for private account data only visible for this user.
   Map<String, BasicEvent> roomAccountData = {};
 
-  final _sendingQueue = <Completer>[];
+  /// Queue of sending events
+  /// NOTE: This shouldn't be modified directly, use [sendEvent] instead. This is only used for testing.
+  final sendingQueue = <Completer>[];
+
+  /// List of transaction IDs of events that are currently queued to be sent
+  final sendingQueueEventsByTxId = <String>[];
 
   Timer? _clearTypingIndicatorTimer;
 
@@ -120,15 +125,13 @@ class Room {
       return;
     }
     final allStates =
-        await client.database?.getUnimportantRoomEventStatesForRoom(
+        await client.database.getUnimportantRoomEventStatesForRoom(
       client.importantStateEvents.toList(),
       this,
     );
 
-    if (allStates != null) {
-      for (final state in allStates) {
-        setState(state);
-      }
+    for (final state in allStates) {
+      setState(state);
     }
     partial = false;
   }
@@ -570,6 +573,12 @@ class Room {
   /// this works if there is no connection to the homeserver. This does **not**
   /// set a read marker!
   Future<void> markUnread(bool unread) async {
+    if (unread == markedUnread) return;
+    if (membership != Membership.join) {
+      throw Exception(
+        'Can not markUnread on a room with membership $membership',
+      );
+    }
     final content = MarkedUnread(unread).toJson();
     await _handleFakeSync(
       SyncUpdate(
@@ -742,6 +751,8 @@ class Room {
                     'msgtype': file.msgType,
                     'body': file.name,
                     'filename': file.name,
+                    'info': file.info,
+                    if (extraContent != null) ...extraContent,
                   },
                   type: EventTypes.Message,
                   eventId: txid,
@@ -764,6 +775,7 @@ class Room {
         },
       ),
     );
+    await _handleFakeSync(syncUpdate);
 
     MatrixFile uploadFile = file; // ignore: omit_local_variable_types
     // computing the thumbnail in case we can
@@ -772,7 +784,6 @@ class Room {
       syncUpdate.rooms!.join!.values.first.timeline!.events!.first
               .unsigned![fileSendingStatusKey] =
           FileSendingStatus.generatingThumbnail.name;
-      await _handleFakeSync(syncUpdate);
       thumbnail ??= await file.generateThumbnail(
         nativeImplementations: client.nativeImplementations,
         customImageResizer: client.customImageResizer,
@@ -1102,11 +1113,14 @@ class Room {
         },
       ),
     );
+    // we need to add the transaction ID to the set of events that are currently queued to be sent
+    // even before the fake sync is called, so that the event constructor can check if the event is in the sending state
+    sendingQueueEventsByTxId.add(messageID);
     await _handleFakeSync(syncUpdate);
     final completer = Completer();
-    _sendingQueue.add(completer);
-    while (_sendingQueue.first != completer) {
-      await _sendingQueue.first.future;
+    sendingQueue.add(completer);
+    while (sendingQueue.first != completer) {
+      await sendingQueue.first.future;
     }
 
     final timeoutDate = DateTime.now().add(client.sendTimelineEventTimeout);
@@ -1138,7 +1152,8 @@ class Room {
               .unsigned![messageSendingStatusKey] = EventStatus.error.intValue;
           await _handleFakeSync(syncUpdate);
           completer.complete();
-          _sendingQueue.remove(completer);
+          sendingQueue.remove(completer);
+          sendingQueueEventsByTxId.remove(messageID);
           if (e is EventTooLarge ||
               (e is MatrixException && e.error == MatrixError.M_FORBIDDEN)) {
             rethrow;
@@ -1157,8 +1172,8 @@ class Room {
     syncUpdate.rooms!.join!.values.first.timeline!.events!.first.eventId = res;
     await _handleFakeSync(syncUpdate);
     completer.complete();
-    _sendingQueue.remove(completer);
-
+    sendingQueue.remove(completer);
+    sendingQueueEventsByTxId.remove(messageID);
     return res;
   }
 
@@ -1225,7 +1240,7 @@ class Room {
 
   /// Call the Matrix API to forget this room if you already left it.
   Future<void> forget() async {
-    await client.database?.forgetRoom(id);
+    await client.database.forgetRoom(id);
     await client.forgetRoom(id);
     // Update archived rooms, otherwise an archived room may still be in the
     // list after a forget room call
@@ -1321,7 +1336,6 @@ class Room {
     );
 
     if (onHistoryReceived != null) onHistoryReceived();
-    this.prev_batch = resp.end;
 
     Future<void> loadFn() async {
       if (!((resp.chunk.isNotEmpty) && resp.end != null)) return;
@@ -1362,20 +1376,17 @@ class Room {
                 : null,
           ),
         ),
-        direction: Direction.b,
+        direction: direction,
       );
     }
 
-    if (client.database != null) {
-      await client.database?.transaction(() async {
-        if (storeInDatabase) {
-          await client.database?.setRoomPrevBatch(resp.end, id, client);
-        }
-        await loadFn();
-      });
-    } else {
+    await client.database.transaction(() async {
+      if (storeInDatabase && direction == Direction.b) {
+        this.prev_batch = resp.end;
+        await client.database.setRoomPrevBatch(resp.end, id, client);
+      }
       await loadFn();
-    }
+    });
 
     return resp.chunk.length;
   }
@@ -1466,7 +1477,7 @@ class Room {
     ].map((e) => Event.fromMatrixEvent(e, this)).toList();
 
     // Try again to decrypt encrypted events but don't update the database.
-    if (encrypted && client.database != null && client.encryptionEnabled) {
+    if (encrypted && client.encryptionEnabled) {
       for (var i = 0; i < events.length; i++) {
         if (events[i].type == EventTypes.Encrypted &&
             events[i].content['can_request_session'] == true) {
@@ -1520,17 +1531,19 @@ class Room {
     void Function()? onNewEvent,
     void Function()? onUpdate,
     String? eventContextId,
+    int? limit = Room.defaultHistoryCount,
   }) async {
     await postLoad();
 
-    List<Event> events;
+    var events = <Event>[];
 
     if (!isArchived) {
-      events = await client.database?.getEventList(
-            this,
-            limit: defaultHistoryCount,
-          ) ??
-          <Event>[];
+      await client.database.transaction(() async {
+        events = await client.database.getEventList(
+          this,
+          limit: limit,
+        );
+      });
     } else {
       final archive = client.getArchiveRoomFromCache(id);
       events = archive?.timeline.events.toList() ?? [];
@@ -1568,7 +1581,7 @@ class Room {
       final userIds = events.map((event) => event.senderId).toSet();
       for (final userId in userIds) {
         if (getState(EventTypes.RoomMember, userId) != null) continue;
-        final dbUser = await client.database?.getUser(userId, this);
+        final dbUser = await client.database.getUser(userId, this);
         if (dbUser != null) setState(dbUser);
       }
     }
@@ -1584,9 +1597,9 @@ class Room {
             chunk.events[i] = await client.encryption!.decryptRoomEvent(
               chunk.events[i],
             );
-          } else if (client.database != null) {
+          } else {
             // else, we need the database
-            await client.database?.transaction(() async {
+            await client.database.transaction(() async {
               for (var i = 0; i < chunk.events.length; i++) {
                 if (chunk.events[i].content['can_request_session'] == true) {
                   chunk.events[i] = await client.encryption!.decryptRoomEvent(
@@ -1653,7 +1666,7 @@ class Room {
       // events won't get written to memory in this case and someone new could
       // have joined, while someone else left, which might lead to the same
       // count in the completeness check.
-      final users = await client.database?.getUsers(this) ?? [];
+      final users = await client.database.getUsers(this);
       for (final user in users) {
         setState(user);
       }
@@ -1684,7 +1697,7 @@ class Room {
     if (cache) {
       for (final user in users) {
         setState(user); // at *least* cache this in-memory
-        await client.database?.storeEventUpdate(
+        await client.database.storeEventUpdate(
           id,
           user,
           EventUpdateType.state,
@@ -1762,8 +1775,8 @@ class Room {
       );
 
       // Store user in database:
-      await client.database?.transaction(() async {
-        await client.database?.storeEventUpdate(
+      await client.database.transaction(() async {
+        await client.database.storeEventUpdate(
           id,
           foundUser,
           EventUpdateType.state,
@@ -1799,7 +1812,7 @@ class Room {
 
     // If the room is not postloaded, check the database
     if (partial && foundUser == null) {
-      foundUser = await client.database?.getUser(mxID, this);
+      foundUser = await client.database.getUser(mxID, this);
     }
 
     // If not in the database, try fetching the member from the server
@@ -1907,7 +1920,7 @@ class Room {
   /// found. Returns null if not found anywhere.
   Future<Event?> getEventById(String eventID) async {
     try {
-      final dbEvent = await client.database?.getEventById(eventID, this);
+      final dbEvent = await client.database.getEventById(eventID, this);
       if (dbEvent != null) return dbEvent;
       final matrixEvent = await client.getOneRoomEvent(id, eventID);
       final event = Event.fromMatrixEvent(matrixEvent, this);
@@ -2047,6 +2060,8 @@ class Room {
   /// `m.sticker` use `canSendEvent('<event-type>')`.
   bool get canSendDefaultMessages {
     if (encrypted && !client.encryptionEnabled) return false;
+    if (isExtinct) return false;
+    if (membership != Membership.join) return false;
 
     return canSendEvent(encrypted ? EventTypes.Encrypted : EventTypes.Message);
   }
@@ -2249,13 +2264,22 @@ class Room {
   }
 
   /// Changes the join rules. You should check first if the user is able to change it.
-  Future<void> setJoinRules(JoinRules joinRules) async {
+  Future<void> setJoinRules(
+    JoinRules joinRules, {
+    /// For restricted rooms, the id of the room where a user needs to be member.
+    /// Learn more at https://spec.matrix.org/latest/client-server-api/#restricted-rooms
+    String? allowConditionRoomId,
+  }) async {
     await client.setRoomStateWithKey(
       id,
       EventTypes.RoomJoinRules,
       '',
       {
         'join_rule': joinRules.toString().replaceAll('JoinRules.', ''),
+        if (allowConditionRoomId != null)
+          'allow': [
+            {'room_id': allowConditionRoomId, 'type': 'm.room_membership'},
+          ],
       },
     );
     return;
@@ -2369,13 +2393,9 @@ class Room {
     SyncUpdate syncUpdate, {
     Direction? direction,
   }) async {
-    if (client.database != null) {
-      await client.database?.transaction(() async {
-        await client.handleSync(syncUpdate, direction: direction);
-      });
-    } else {
+    await client.database.transaction(() async {
       await client.handleSync(syncUpdate, direction: direction);
-    }
+    });
   }
 
   /// Whether this is an extinct room which has been archived in favor of a new

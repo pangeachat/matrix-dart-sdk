@@ -460,6 +460,24 @@ extension CommandsClientExtension on Client {
       stdout?.write(DefaultCommandOutput(users: [mxid]).toString());
       return null;
     });
+    addCommand('roomupgrade', (args, stdout) async {
+      final version = args.msg;
+      if (version.isEmpty) {
+        throw CommandException('Please provide a room version');
+      }
+      final newRoomId =
+          await args.room!.client.upgradeRoom(args.room!.id, version);
+      stdout?.write(DefaultCommandOutput(rooms: [newRoomId]).toString());
+      return null;
+    });
+    addCommand('logout', (args, stdout) async {
+      await logout();
+      return null;
+    });
+    addCommand('logoutAll', (args, stdout) async {
+      await logoutAll();
+      return null;
+    });
   }
 }
 

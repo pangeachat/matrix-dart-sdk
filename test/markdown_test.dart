@@ -70,14 +70,29 @@ void main() {
         'Snape killed <span data-mx-spoiler="">Dumbledoor <strong>bold</strong></span>',
       );
     });
-    test('multiple paragraphs', () {
+    test('linebreaks', () {
+      expect(markdown('Heya!\nBeep'), 'Heya!<br/>Beep');
       expect(markdown('Heya!\n\nBeep'), '<p>Heya!</p><p>Beep</p>');
+      expect(markdown('Heya!\n\n\nBeep'), '<p>Heya!</p><p><br/>Beep</p>');
+      expect(
+        markdown('Heya!\n\n\n\nBeep'),
+        '<p>Heya!</p><p><br/><br/>Beep</p>',
+      );
+      expect(
+        markdown('Heya!\n\n\n\nBeep\n\n'),
+        '<p>Heya!</p><p><br/><br/>Beep</p>',
+      );
+      expect(
+        markdown('\n\nHeya!\n\n\n\nBeep'),
+        '<p>Heya!</p><p><br/><br/>Beep</p>',
+      );
+      expect(
+        markdown('\n\nHeya!\n\n\n\nBeep\n '),
+        '<p>Heya!</p><p><br/><br/>Beep</p>',
+      );
     });
     test('Other block elements', () {
       expect(markdown('# blah\n\nblubb'), '<h1>blah</h1><p>blubb</p>');
-    });
-    test('linebreaks', () {
-      expect(markdown('foxies\ncute'), 'foxies<br/>cute');
     });
     test('lists', () {
       expect(
@@ -126,7 +141,7 @@ void main() {
       );
       expect(
         markdown('https://matrix.to/#/#fox:sorunome.de'),
-        'https://matrix.to/#/#fox:sorunome.de',
+        '<a href="https://matrix.to/#/#fox:sorunome.de">https://matrix.to/#/#fox:sorunome.de</a>',
       );
       expect(
         markdown('Hey @sorunome:sorunome.de:1234!'),
@@ -204,6 +219,15 @@ void main() {
           convertLinebreaks: true,
         ),
         '<p>The first<br/>codeblock</p><pre><code class="language-dart">void main(){\nprint(something);\n}\n</code></pre><p>And the second code block</p><pre><code class="language-js">meow\nmeow\n</code></pre>',
+      );
+    });
+    test('Checkboxes', () {
+      expect(
+        markdown(
+          '- [ ] Check 1\n- [x] Check 2\n- Normal list item',
+          convertLinebreaks: true,
+        ),
+        '<ul class="contains-task-list"><li class="task-list-item"><input type="checkbox"></input>Check 1</li><li class="task-list-item"><input type="checkbox" checked="true"></input>Check 2</li><li>Normal list item</li></ul>',
       );
     });
   });
