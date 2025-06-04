@@ -26,7 +26,6 @@ export 'fake_matrix_api.dart' show FakeMatrixApi;
 export 'src/client.dart';
 export 'src/database/database_api.dart';
 export 'src/database/matrix_sdk_database.dart';
-export 'src/database/hive_collections_database.dart';
 export 'src/database/sqflite_encryption_helper.dart';
 export 'src/event.dart';
 export 'src/presence.dart';
@@ -57,6 +56,7 @@ export 'src/utils/crypto/encrypted_file.dart';
 export 'src/utils/device_keys_list.dart';
 export 'src/utils/event_update.dart';
 export 'src/utils/http_timeout.dart';
+export 'src/utils/event_localizations.dart';
 export 'src/utils/image_pack_extension.dart';
 export 'src/utils/matrix_default_localizations.dart';
 export 'src/utils/matrix_file.dart';
@@ -79,6 +79,7 @@ export 'msc_extensions/msc_3935_cute_events/msc_3935_cute_events.dart';
 export 'msc_extensions/msc_1236_widgets/msc_1236_widgets.dart';
 export 'msc_extensions/msc_2835_uia_login/msc_2835_uia_login.dart';
 export 'msc_extensions/msc_3814_dehydrated_devices/msc_3814_dehydrated_devices.dart';
+export 'msc_extensions/extension_timeline_export/timeline_export.dart';
 
 export 'src/utils/web_worker/web_worker_stub.dart'
     if (dart.library.html) 'src/utils/web_worker/web_worker.dart';

@@ -1274,10 +1274,10 @@ void main() {
         {
           'content': {
             'body':
-                '# Title\nsome text and [link](https://example.com)\nokay and this is **important**',
+                '> Quote\n# Title\nsome text and [link](https://example.com)\nokay and this is **important**',
             'format': 'org.matrix.custom.html',
             'formatted_body':
-                '<h1>Title</h1>\n<p>some text and <a href="https://example.com">link</a><br>okay and this is <strong>important</strong></p>\n',
+                '<blockquote><p>Quote</p></blockquote><h1>Title</h1>\n<p>some text and <a href="https://example.com">link</a><br>okay and this is <strong>important</strong></p>\n',
             'msgtype': 'm.text',
           },
           'event_id': '\$143273582443PhrSn:example.org',
@@ -1294,7 +1294,7 @@ void main() {
           MatrixDefaultLocalizations(),
           removeMarkdown: true,
         ),
-        'Title\nsome text and link\nokay and this is important',
+        'Quote\n\nTitle\nsome text and link\nokay and this is important',
       );
       expect(
         await event.calcLocalizedBody(
@@ -1302,7 +1302,7 @@ void main() {
           removeMarkdown: true,
           plaintextBody: true,
         ),
-        'Title\nsome text and 🔗link\nokay and this is important',
+        'Quote\n\nTitle\nsome text and 🔗link\nokay and this is important',
       );
       expect(
         await event.calcLocalizedBody(
@@ -1310,7 +1310,7 @@ void main() {
           removeMarkdown: true,
           withSenderNamePrefix: true,
         ),
-        'Example: Title\nsome text and link\nokay and this is important',
+        'Example: Quote\n\nTitle\nsome text and link\nokay and this is important',
       );
       expect(
         await event.calcLocalizedBody(
@@ -1319,7 +1319,7 @@ void main() {
           plaintextBody: true,
           withSenderNamePrefix: true,
         ),
-        'Example: Title\nsome text and 🔗link\nokay and this is important',
+        'Example: Quote\n\nTitle\nsome text and 🔗link\nokay and this is important',
       );
 
       event = Event.fromJson(
@@ -2861,6 +2861,50 @@ void main() {
         event.toJson()..remove('status'),
         matrixEvent.toJson(),
       );
+    });
+
+    test('getReplyEvent fallback', () async {
+      final event = Event.fromJson(
+        {
+          'content': {
+            'msgtype': 'text',
+            'body': 'Hello world',
+            'm.relates_to': {
+              'rel_type': 'm.thread',
+              'event_id': '\$root',
+              'm.in_reply_to': {'event_id': '\$target'},
+              'is_falling_back': true,
+            },
+          },
+          'event_id': '\$143273582443PhrSn:example.org',
+          'origin_server_ts': 1432735824653,
+          'room_id': room.id,
+          'sender': '@example:example.org',
+          'type': 'm.room.message',
+          'unsigned': {'age': 1234},
+          'redacts': 'abcd',
+          'prev_content': <String, Object?>{
+            'foo': 'bar',
+          },
+        },
+        room,
+      );
+      expect(event.relationshipType, RelationshipTypes.thread);
+      expect(event.relationshipEventId, '\$root');
+      final targetEvent = Event(
+        eventId: '\$target',
+        senderId: '@example:example.org',
+        type: 'm.room.message',
+        content: {
+          'msgtype': 'text',
+          'body': 'Hello world',
+        },
+        originServerTs: DateTime.now(),
+        room: room,
+      );
+      final timeline =
+          Timeline(room: room, chunk: TimelineChunk(events: [targetEvent]));
+      expect(await event.getReplyEvent(timeline), targetEvent);
     });
   });
 }
