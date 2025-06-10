@@ -1528,8 +1528,9 @@ class MatrixSdkDatabase extends DatabaseApi with DatabaseFileStorage {
       );
       return;
     }
-    raw['allowed_at_index'] = allowedAtIndex;
-    await _inboundGroupSessionsBox.put(sessionId, raw);
+    final json = copyMap(raw);
+    json['allowed_at_index'] = allowedAtIndex;
+    await _inboundGroupSessionsBox.put(sessionId, json);
     return;
   }
 
