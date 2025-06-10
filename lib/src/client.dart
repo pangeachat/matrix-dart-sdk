@@ -593,7 +593,10 @@ class Client extends MatrixApi {
   @override
   Future<DiscoveryInformation> getWellknown() async {
     final wellKnownResponse = await httpClient.get(
-      Uri.https(userID!.domain!, '/.well-known/matrix/client'),
+      Uri.https(
+        userID?.domain ?? homeserver!.host,
+        '/.well-known/matrix/client',
+      ),
     );
     final wellKnown = DiscoveryInformation.fromJson(
       jsonDecode(utf8.decode(wellKnownResponse.bodyBytes))
@@ -2778,6 +2781,10 @@ class Client extends MatrixApi {
         if (state != null && state.isNotEmpty) {
           await _handleRoomEvents(room, state, EventUpdateType.inviteState);
         }
+      }
+      if (syncRoomUpdate is LeftRoomUpdate && getRoomById(id) == null) {
+        Logs().d('Skip store LeftRoomUpdate for unknown room', id);
+        continue;
       }
       await database?.storeRoomUpdate(id, syncRoomUpdate, room.lastEvent, this);
     }
