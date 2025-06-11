@@ -3139,9 +3139,9 @@ class Client extends MatrixApi {
         // check if shouldReplaceLastEvent is set then use it instead of the below
         if (shouldReplaceRoomLastEvent != null) {
           if (!shouldReplaceRoomLastEvent!(room.lastEvent, event)) break;
-        } else {
-          if (!roomPreviewLastEvents.contains(event.type)) break;
         }
+
+        if (!roomPreviewLastEvents.contains(event.type)) break;
 
         // Event is a valid new lastEvent:
         room.lastEvent = event;
