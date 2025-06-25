@@ -1085,7 +1085,7 @@ class Client extends MatrixApi {
     } catch (e) {
       Logs().d('Unable to set profile for $userId', e);
     } finally {
-      await database?.markUserProfileAsOutdated(userId);
+      await database.markUserProfileAsOutdated(userId);
     }
   }
 
@@ -2892,7 +2892,7 @@ class Client extends MatrixApi {
       }
 
       if (event.type == EventTypes.SpaceChild) {
-        await database?.removeSpaceHierarchy(room.id);
+        await database.removeSpaceHierarchy(room.id);
       }
 
       if (prevBatch != null &&
@@ -4020,7 +4020,7 @@ class Client extends MatrixApi {
       maxDepth: maxDepth,
       from: from,
     );
-    await database?.storeSpaceHierarchy(
+    await database.storeSpaceHierarchy(
       roomId,
       maxDepth,
       suggestedOnly,
