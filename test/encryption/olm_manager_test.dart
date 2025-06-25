@@ -20,6 +20,7 @@ import 'dart:convert';
 
 import 'package:olm/olm.dart' as olm;
 import 'package:test/test.dart';
+import 'package:vodozemac/vodozemac.dart' as vod;
 
 import 'package:matrix/encryption/utils/json_signature_check_extension.dart';
 import 'package:matrix/matrix.dart';
@@ -32,6 +33,10 @@ void main() {
     late Client client;
 
     setUpAll(() async {
+      await vod.init(
+        wasmPath: './pkg/',
+        libraryPath: './rust/target/debug/',
+      );
       await olm.init();
       olm.get_library_version();
       client = await getClient();
@@ -62,7 +67,7 @@ void main() {
       );
       expect(sent['device_keys'] != null, true);
       expect(sent['one_time_keys'] != null, true);
-      expect(sent['one_time_keys'].keys.length, 66);
+      expect(sent['one_time_keys'].keys.length, 33);
       expect(sent['fallback_keys'] != null, true);
       expect(sent['fallback_keys'].keys.length, 1);
       FakeMatrixApi.calledEndpoints.clear();
@@ -78,7 +83,7 @@ void main() {
       sent = json.decode(
         FakeMatrixApi.calledEndpoints['/client/v3/keys/upload']!.first,
       );
-      expect(sent['one_time_keys'].keys.length, 46);
+      expect(sent['one_time_keys'].keys.length, 13);
       expect(sent['fallback_keys'].keys.length, 0);
     });
 
