@@ -20,13 +20,21 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
+import 'package:vodozemac/vodozemac.dart' as vod;
 
 import 'package:matrix/encryption.dart';
 import 'package:matrix/matrix.dart';
 import 'package:matrix/src/models/timeline_chunk.dart';
 import 'fake_client.dart';
+import 'fake_database.dart';
 
-void main() {
+void main() async {
+  final client = Client(
+    'testclient',
+    httpClient: FakeMatrixApi(),
+    database: await getDatabase(),
+  );
+
   /// All Tests related to the Event
   group('Event', () {
     Logs().level = Level.error;
@@ -51,7 +59,6 @@ void main() {
       'status': EventStatus.synced.intValue,
       'content': contentJson,
     };
-    final client = Client('testclient', httpClient: FakeMatrixApi());
     final room = Room(id: '!testroom:example.abc', client: client);
     final event = Event.fromJson(
       jsonObj,
@@ -221,7 +228,13 @@ void main() {
       ];
       for (final testType in testTypes) {
         redactJsonObj['type'] = testType;
-        final room = Room(id: '1234', client: Client('testclient'));
+        final room = Room(
+          id: '1234',
+          client: Client(
+            'testclient',
+            database: await getDatabase(),
+          ),
+        );
         final redactionEventJson = {
           'content': {'reason': 'Spamming'},
           'event_id': '143273582443PhrSn:example.org',
@@ -248,7 +261,13 @@ void main() {
     test('remove', () async {
       final event = Event.fromJson(
         jsonObj,
-        Room(id: '1234', client: Client('testclient')),
+        Room(
+          id: '1234',
+          client: Client(
+            'testclient',
+            database: await getDatabase(),
+          ),
+        ),
       );
       expect(() async => await event.cancelSend(), throwsException);
       event.status = EventStatus.sending;
@@ -258,7 +277,20 @@ void main() {
     });
 
     test('sendAgain', () async {
-      final matrix = Client('testclient', httpClient: FakeMatrixApi());
+      try {
+        vodInit ??= vod.init(
+          wasmPath: './pkg/',
+          libraryPath: './rust/target/debug/',
+        );
+        await vodInit;
+      } catch (_) {
+        Logs().d('Encryption via Vodozemac not enabled');
+      }
+      final matrix = Client(
+        'testclient',
+        httpClient: FakeMatrixApi(),
+        database: await getDatabase(),
+      );
       await matrix.checkHomeserver(
         Uri.parse('https://fakeserver.notexisting'),
         checkWellKnown: false,
@@ -283,7 +315,11 @@ void main() {
     });
 
     test('requestKey', tags: 'olm', () async {
-      final matrix = Client('testclient', httpClient: FakeMatrixApi());
+      final matrix = Client(
+        'testclient',
+        httpClient: FakeMatrixApi(),
+        database: await getDatabase(),
+      );
       await matrix.checkHomeserver(
         Uri.parse('https://fakeserver.notexisting'),
         checkWellKnown: false,
@@ -333,6 +369,7 @@ void main() {
       await matrix.dispose(closeDatabase: true);
     });
     test('requestKey', tags: 'olm', () async {
+      final client = await getClient();
       jsonObj['state_key'] = '@alice:example.com';
       final event = Event.fromJson(
         jsonObj,
@@ -355,7 +392,11 @@ void main() {
       await client.dispose();
     });
     test('getLocalizedBody, isEventKnown', () async {
-      final matrix = Client('testclient', httpClient: FakeMatrixApi());
+      final matrix = Client(
+        'testclient',
+        httpClient: FakeMatrixApi(),
+        database: await getDatabase(),
+      );
       final room = Room(id: '!1234:example.com', client: matrix);
       var event = Event.fromJson(
         {
@@ -1167,7 +1208,11 @@ void main() {
     });
 
     test('getLocalizedBody, parameters', () async {
-      final matrix = Client('testclient', httpClient: FakeMatrixApi());
+      final matrix = Client(
+        'testclient',
+        httpClient: FakeMatrixApi(),
+        database: await getDatabase(),
+      );
       final room = Room(id: '!1234:example.com', client: matrix);
       var event = Event.fromJson(
         {
@@ -2477,7 +2522,7 @@ void main() {
       );
       expect(
         await event.isAttachmentInLocalStore(),
-        event.room.client.database?.supportsFileStoring,
+        event.room.client.database.supportsFileStoring,
       );
       expect(buffer.bytes, FILE_BUFF);
       expect(serverHits, 1);
@@ -2487,7 +2532,7 @@ void main() {
       expect(buffer.bytes, FILE_BUFF);
       expect(
         serverHits,
-        event.room.client.database!.supportsFileStoring ? 1 : 2,
+        event.room.client.database.supportsFileStoring ? 1 : 2,
       );
 
       await room.client.dispose(closeDatabase: true);
@@ -2530,12 +2575,12 @@ void main() {
       );
       expect(
         await event.isAttachmentInLocalStore(),
-        event.room.client.database?.supportsFileStoring,
+        event.room.client.database.supportsFileStoring,
       );
       expect(buffer.bytes, FILE_BUFF);
       expect(serverHits, 1);
 
-      if (event.room.client.database?.supportsFileStoring == true) {
+      if (event.room.client.database.supportsFileStoring == true) {
         buffer = await event.downloadAndDecryptAttachment(
           downloadCallback: downloadCallback,
           fromLocalStoreOnly: true,
