@@ -381,6 +381,73 @@ class Room {
 
   Event? lastEvent;
 
+  /// Fetches the most recent event in the timeline from the server to have
+  /// a valid preview after receiving a limited timeline from the sync. Will
+  /// be triggered by the sync loop on demand. Multiple requests will be
+  /// combined to the same request.
+  Future<Event?> refreshLastEvent({
+    timeout = const Duration(seconds: 30),
+  }) async {
+    final lastEvent = _refreshingLastEvent ??= _refreshLastEvent();
+    _refreshingLastEvent = null;
+    return lastEvent;
+  }
+
+  Future<Event?>? _refreshingLastEvent;
+
+  Future<Event?> _refreshLastEvent({
+    timeout = const Duration(seconds: 30),
+  }) async {
+    if (membership != Membership.join) return null;
+
+    final filter = StateFilter(types: client.roomPreviewLastEvents.toList());
+    final result = await client
+        .getRoomEvents(
+          id,
+          Direction.b,
+          limit: 1,
+          filter: jsonEncode(filter.toJson()),
+        )
+        .timeout(timeout);
+    final matrixEvent = result.chunk.firstOrNull;
+    if (matrixEvent == null) {
+      if (lastEvent?.type == EventTypes.refreshingLastEvent) {
+        lastEvent = null;
+      }
+      Logs().d('No last event found for room', id);
+      return null;
+    }
+    var event = Event.fromMatrixEvent(
+      matrixEvent,
+      this,
+      status: EventStatus.synced,
+    );
+    if (event.type == EventTypes.Encrypted) {
+      final encryption = client.encryption;
+      if (encryption != null) {
+        event = await encryption.decryptRoomEvent(event);
+      }
+    }
+    lastEvent = event;
+
+    Logs().d('Refreshed last event for room', id);
+
+    // Trigger sync handling so that lastEvent gets stored and room list gets
+    // updated.
+    await _handleFakeSync(
+      SyncUpdate(
+        nextBatch: '',
+        rooms: RoomsUpdate(
+          join: {
+            id: JoinedRoomUpdate(timeline: TimelineUpdate(limited: false)),
+          },
+        ),
+      ),
+    );
+
+    return event;
+  }
+
   void setEphemeral(BasicEvent ephemeral) {
     ephemerals[ephemeral.type] = ephemeral;
     if (ephemeral.type == 'm.typing') {
@@ -447,8 +514,16 @@ class Room {
   String get displayname => getLocalizedDisplayname();
 
   /// When was the last event received.
-  DateTime get latestEventReceivedTime =>
-      lastEvent?.originServerTs ?? DateTime.now();
+  DateTime get latestEventReceivedTime {
+    final lastEventTime = lastEvent?.originServerTs;
+    if (lastEventTime != null) return lastEventTime;
+
+    if (membership == Membership.invite) return DateTime.now();
+    final createEvent = getState(EventTypes.RoomCreate);
+    if (createEvent is MatrixEvent) return createEvent.originServerTs;
+
+    return DateTime(0);
+  }
 
   /// Call the Matrix API to change the name of this room. Returns the event ID of the
   /// new m.room.name event.
@@ -639,6 +714,7 @@ class Room {
     String? threadRootEventId,
     String? threadLastEventId,
     StringBuffer? commandStdout,
+    bool addMentions = true,
   }) {
     if (parseCommands) {
       return client.parseAndRunCommand(
@@ -656,6 +732,41 @@ class Room {
       'msgtype': msgtype,
       'body': message,
     };
+
+    if (addMentions) {
+      var potentialMentions = message
+          .split('@')
+          .map(
+            (text) => text.startsWith('[')
+                ? '@${text.split(']').first}]'
+                : '@${text.split(RegExp(r'\s+')).first}',
+          )
+          .toList()
+        ..removeAt(0);
+
+      final hasRoomMention = potentialMentions.remove('@room');
+
+      potentialMentions = potentialMentions
+          .map(
+            (mention) =>
+                mention.isValidMatrixId ? mention : getMention(mention),
+          )
+          .nonNulls
+          .toSet() // Deduplicate
+          .toList()
+        ..remove(client.userID); // We should never mention ourself.
+
+      // https://spec.matrix.org/v1.7/client-server-api/#mentioning-the-replied-to-user
+      if (inReplyTo != null) potentialMentions.add(inReplyTo.senderId);
+
+      if (hasRoomMention || potentialMentions.isNotEmpty) {
+        event['m.mentions'] = {
+          if (hasRoomMention) 'room': true,
+          if (potentialMentions.isNotEmpty) 'user_ids': potentialMentions,
+        };
+      }
+    }
+
     if (parseMarkdown) {
       final html = markdown(
         event['body'],
@@ -731,6 +842,11 @@ class Room {
     Map<String, dynamic>? extraContent,
     String? threadRootEventId,
     String? threadLastEventId,
+
+    /// Callback which gets triggered on progress containing the amount of
+    /// uploaded bytes.
+    void Function(int)? onUploadProgress,
+    void Function(int)? onThumbnailUploadProgress,
   }) async {
     txid ??= client.generateUniqueTransactionId();
     sendingFilePlaceholders[txid] = file;
@@ -1937,13 +2053,41 @@ class Room {
     }
   }
 
+  /// Returns the room version if specified in the `m.room.create` state event.
+  String? get roomVersion =>
+      getState(EventTypes.RoomCreate)?.content.tryGet<String>('room_version');
+
+  /// Returns the creator's user ID of the room by fetching the sender of the
+  /// `m.room.create` event.
+  Set<String> get creatorUserIds {
+    final creationEvent = getState(EventTypes.RoomCreate);
+    if (creationEvent == null) return {};
+    final additionalCreators =
+        creationEvent.content.tryGetList<String>('additional_creators') ?? [];
+    return {
+      creationEvent.senderId,
+      ...additionalCreators,
+    };
+  }
+
   /// Returns the power level of the given user ID.
   /// If a user_id is in the users list, then that user_id has the associated
   /// power level. Otherwise they have the default level users_default.
   /// If users_default is not supplied, it is assumed to be 0. If the room
   /// contains no m.room.power_levels event, the room’s creator has a power
   /// level of 100, and all other users have a power level of 0.
+  /// For room version 12 and above the room creator always has maximum
+  /// power level.
   int getPowerLevelByUserId(String userId) {
+    // Room creator has maximum power level:
+    if (creatorUserIds.contains(userId) &&
+        !((int.tryParse(roomVersion ?? '') ?? 0) < 12)) {
+      // 2^53 - 1 from https://spec.matrix.org/v1.15/appendices/#canonical-json
+      const maxInteger = 9007199254740991;
+
+      return maxInteger;
+    }
+
     final powerLevelMap = getState(EventTypes.RoomPowerLevels)?.content;
 
     final userSpecificPowerLevel =
@@ -1970,12 +2114,18 @@ class Room {
     return (powerLevelState is Map<String, int>) ? powerLevelState : null;
   }
 
-  /// Uploads a new user avatar for this room. Returns the event ID of the new
-  /// m.room.avatar event. Leave empty to remove the current avatar.
-  Future<String> setAvatar(MatrixFile? file) async {
+  /// Uploads a new avatar for this room. Returns the event ID of the new
+  /// m.room.avatar event. Insert null to remove the current avatar.
+  Future<String> setAvatar(
+    MatrixFile? file, {
+    void Function(int)? onUploadProgress,
+  }) async {
     final uploadResp = file == null
         ? null
-        : await client.uploadContent(file.bytes, filename: file.name);
+        : await client.uploadContent(
+            file.bytes,
+            filename: file.name,
+          );
     return await client.setRoomStateWithKey(
       id,
       EventTypes.RoomAvatar,
@@ -1987,15 +2137,18 @@ class Room {
   }
 
   /// The level required to ban a user.
-  bool get canBan =>
-      (getState(EventTypes.RoomPowerLevels)?.content.tryGet<int>('ban') ??
-          50) <=
-      ownPowerLevel;
+  bool get canBan {
+    if (membership != Membership.join) return false;
+    return (getState(EventTypes.RoomPowerLevels)?.content.tryGet<int>('ban') ??
+            50) <=
+        ownPowerLevel;
+  }
 
   /// returns if user can change a particular state event by comparing `ownPowerLevel`
   /// with possible overrides in `events`, if not present compares `ownPowerLevel`
   /// with state_default
   bool canChangeStateEvent(String action) {
+    if (membership != Membership.join) return false;
     return powerForChangingStateEvent(action) <= ownPowerLevel;
   }
 
@@ -2067,22 +2220,32 @@ class Room {
   }
 
   /// The level required to invite a user.
-  bool get canInvite =>
-      (getState(EventTypes.RoomPowerLevels)?.content.tryGet<int>('invite') ??
-          0) <=
-      ownPowerLevel;
+  bool get canInvite {
+    if (membership != Membership.join) return false;
+    return (getState(EventTypes.RoomPowerLevels)
+                ?.content
+                .tryGet<int>('invite') ??
+            0) <=
+        ownPowerLevel;
+  }
 
   /// The level required to kick a user.
-  bool get canKick =>
-      (getState(EventTypes.RoomPowerLevels)?.content.tryGet<int>('kick') ??
-          50) <=
-      ownPowerLevel;
+  bool get canKick {
+    if (membership != Membership.join) return false;
+    return (getState(EventTypes.RoomPowerLevels)?.content.tryGet<int>('kick') ??
+            50) <=
+        ownPowerLevel;
+  }
 
   /// The level required to redact an event.
-  bool get canRedact =>
-      (getState(EventTypes.RoomPowerLevels)?.content.tryGet<int>('redact') ??
-          50) <=
-      ownPowerLevel;
+  bool get canRedact {
+    if (membership != Membership.join) return false;
+    return (getState(EventTypes.RoomPowerLevels)
+                ?.content
+                .tryGet<int>('redact') ??
+            50) <=
+        ownPowerLevel;
+  }
 
   ///  	The default level required to send state events. Can be overridden by the events key.
   bool get canSendDefaultStates {
@@ -2101,6 +2264,7 @@ class Room {
   /// The level required to send a certain event. Defaults to 0 if there is no
   /// events_default set or there is no power level state in the room.
   bool canSendEvent(String eventType) {
+    if (membership != Membership.join) return false;
     final powerLevelsMap = getState(EventTypes.RoomPowerLevels)?.content;
 
     final pl = powerLevelsMap

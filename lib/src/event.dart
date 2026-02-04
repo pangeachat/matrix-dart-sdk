@@ -16,17 +16,20 @@
  *   along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:collection/collection.dart';
 import 'package:html/parser.dart';
+import 'package:http/http.dart' as http;
 import 'package:mime/mime.dart';
 
 import 'package:matrix/matrix.dart';
 import 'package:matrix/src/utils/file_send_request_credentials.dart';
 import 'package:matrix/src/utils/html_to_text.dart';
 import 'package:matrix/src/utils/markdown.dart';
+import 'package:matrix/src/utils/multipart_request_progress.dart';
 
 abstract class RelationshipTypes {
   static const String reply = 'm.in_reply_to';
@@ -747,6 +750,10 @@ class Event extends MatrixEvent {
     bool getThumbnail = false,
     Future<Uint8List> Function(Uri)? downloadCallback,
     bool fromLocalStoreOnly = false,
+
+    /// Callback which gets triggered on progress containing the amount of
+    /// downloaded bytes.
+    void Function(int)? onDownloadProgress,
   }) async {
     if (![EventTypes.Message, EventTypes.Sticker].contains(type)) {
       throw ("This event has the type '$type' and so it can't contain an attachment.");
@@ -781,11 +788,14 @@ class Event extends MatrixEvent {
     final canDownloadFileFromServer = uint8list == null && !fromLocalStoreOnly;
     if (canDownloadFileFromServer) {
       final httpClient = room.client.httpClient;
-      downloadCallback ??= (Uri url) async => (await httpClient.get(
-            url,
-            headers: {'authorization': 'Bearer ${room.client.accessToken}'},
-          ))
-              .bodyBytes;
+      downloadCallback ??= (Uri url) async {
+        final request = http.Request('GET', url);
+        request.headers['authorization'] = 'Bearer ${room.client.accessToken}';
+
+        final response = await httpClient.send(request);
+
+        return await response.stream.toBytesWithProgress(onDownloadProgress);
+      };
       uint8list =
           await downloadCallback(await mxcUrl.getDownloadUri(room.client));
       storeable = storeable && uint8list.lengthInBytes < database.maxFileSize;
@@ -1178,6 +1188,17 @@ class Event extends MatrixEvent {
     if (status == null) return null;
     return FileSendingStatus.values.singleWhereOrNull(
       (fileSendingStatus) => fileSendingStatus.name == status,
+    );
+  }
+
+  /// Returns the mentioned userIds and whether the event includes an @room
+  /// mention. This is only determined by the `m.mention` object in the event
+  /// content.
+  ({List<String> userIds, bool room}) get mentions {
+    final mentionsMap = content.tryGetMap<String, Object?>('m.mentions');
+    return (
+      userIds: mentionsMap?.tryGetList<String>('user_ids') ?? [],
+      room: mentionsMap?.tryGet<bool>('room') ?? false,
     );
   }
 }

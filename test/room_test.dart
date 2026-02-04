@@ -95,6 +95,18 @@ void main() {
 
       room.setState(
         Event(
+          content: {'room_version': '11'},
+          eventId: '\$143273582443PhrSn:example.org',
+          originServerTs: DateTime.fromMillisecondsSinceEpoch(1432735824653),
+          senderId: '@example:example.org',
+          type: 'm.room.create',
+          unsigned: {'age': 1234},
+          stateKey: '',
+          room: room,
+        ),
+      );
+      room.setState(
+        Event(
           room: room,
           eventId: '143273582443PhrSn:example.org',
           originServerTs: DateTime.fromMillisecondsSinceEpoch(1432735824653),
@@ -283,6 +295,8 @@ void main() {
         ),
       );
       expect(room.hasNewMessages, true);
+      expect(room.isUnreadOrInvited, true);
+      room.notificationCount = room.highlightCount = 0;
       expect(room.isUnreadOrInvited, false);
       expect(room.lastEvent?.body, 'cd');
       await updateLastEvent(
@@ -809,6 +823,17 @@ void main() {
       expect(room.canSendEvent('m.room.message'), true);
       final resp = await room.setPower('@test:fakeServer.notExisting', 0);
       expect(resp, '42');
+
+      // Creator has max power level from room version 12 on:
+      expect(room.creatorUserIds.contains('@example:example.org'), true);
+      expect(room.getPowerLevelByUserId('@example:example.org'), 0);
+      expect(room.roomVersion, '11');
+      room.states[EventTypes.RoomCreate]!['']!.content['room_version'] = '12';
+      expect(room.roomVersion, '12');
+      expect(
+        room.getPowerLevelByUserId('@example:example.org'),
+        9007199254740991,
+      );
     });
 
     test('invite', () async {
@@ -856,6 +881,29 @@ void main() {
     test('getTimeline', () async {
       final timeline = await room.getTimeline();
       expect(timeline.events.length, 17);
+    });
+
+    test('Refresh last event', () async {
+      expect(room.lastEvent?.eventId, '12');
+      final lastEventUpdate =
+          room.client.onSync.stream.firstWhere((u) => u.nextBatch.isEmpty);
+      await room.client.handleSync(
+        SyncUpdate(
+          nextBatch: 'abcd',
+          rooms: RoomsUpdate(
+            join: {
+              room.id: JoinedRoomUpdate(
+                timeline: TimelineUpdate(
+                  events: [],
+                  limited: true,
+                ),
+              ),
+            },
+          ),
+        ),
+      );
+      await lastEventUpdate;
+      expect(room.lastEvent?.eventId, '3143273582443PhrSn:example.org');
     });
 
     test('isFederated', () {
@@ -990,6 +1038,36 @@ void main() {
       });
     });
 
+    test('sendEvent with room mention', () async {
+      FakeMatrixApi.calledEndpoints.clear();
+      final resp = await room.sendTextEvent(
+        'Hello world @room',
+        txid: 'testtxid',
+        addMentions: true,
+      );
+      expect(resp?.startsWith('\$event'), true);
+      final entry = FakeMatrixApi.calledEndpoints.entries
+          .firstWhere((p) => p.key.contains('/send/m.room.message/'));
+      final content = json.decode(entry.value.first);
+      expect(content['m.mentions'], {'room': true});
+    });
+
+    test('sendEvent with user mention', () async {
+      FakeMatrixApi.calledEndpoints.clear();
+      final resp = await room.sendTextEvent(
+        'Hello world @[Alice Margatroid]',
+        addMentions: true,
+        txid: 'testtxid',
+      );
+      expect(resp?.startsWith('\$event'), true);
+      final entry = FakeMatrixApi.calledEndpoints.entries
+          .firstWhere((p) => p.key.contains('/send/m.room.message/'));
+      final content = json.decode(entry.value.first);
+      expect(content['m.mentions'], {
+        'user_ids': ['@alice:matrix.org'],
+      });
+    });
+
     test('send edit', () async {
       FakeMatrixApi.calledEndpoints.clear();
       final dynamic resp = await room.sendTextEvent(
@@ -1041,6 +1119,9 @@ void main() {
       expect(content, {
         'body': '> <@alice:example.org> Blah\n\nHello world',
         'msgtype': 'm.text',
+        'm.mentions': {
+          'user_ids': ['@alice:example.org'],
+        },
         'format': 'org.matrix.custom.html',
         'formatted_body':
             '<mx-reply><blockquote><a href="https://matrix.to/#/!localpart:server.abc/\$replyEvent">In reply to</a> <a href="https://matrix.to/#/@alice:example.org">@alice:example.org</a><br>Blah</blockquote></mx-reply>Hello world',
@@ -1077,6 +1158,9 @@ void main() {
         'body':
             '> <@alice:example.org> <b>Blah</b>\n> beep\n\nHello world\nfox',
         'msgtype': 'm.text',
+        'm.mentions': {
+          'user_ids': ['@alice:example.org'],
+        },
         'format': 'org.matrix.custom.html',
         'formatted_body':
             '<mx-reply><blockquote><a href="https://matrix.to/#/!localpart:server.abc/\$replyEvent">In reply to</a> <a href="https://matrix.to/#/@alice:example.org">@alice:example.org</a><br>&lt;b&gt;Blah&lt;&#47;b&gt;<br>beep</blockquote></mx-reply>Hello world<br/>fox',
@@ -1114,6 +1198,9 @@ void main() {
       expect(content, {
         'body': '> <@alice:example.org> plaintext meow\n\nHello world',
         'msgtype': 'm.text',
+        'm.mentions': {
+          'user_ids': ['@alice:example.org'],
+        },
         'format': 'org.matrix.custom.html',
         'formatted_body':
             '<mx-reply><blockquote><a href="https://matrix.to/#/!localpart:server.abc/\$replyEvent">In reply to</a> <a href="https://matrix.to/#/@alice:example.org">@alice:example.org</a><br>meow</blockquote></mx-reply>Hello world',
@@ -1149,6 +1236,9 @@ void main() {
       expect(content, {
         'body': '> <@alice:example.org> Hey @\u{200b}room\n\nHello world',
         'msgtype': 'm.text',
+        'm.mentions': {
+          'user_ids': ['@alice:example.org'],
+        },
         'format': 'org.matrix.custom.html',
         'formatted_body':
             '<mx-reply><blockquote><a href="https://matrix.to/#/!localpart:server.abc/\$replyEvent">In reply to</a> <a href="https://matrix.to/#/@alice:example.org">@alice:example.org</a><br>Hey @room</blockquote></mx-reply>Hello world',
@@ -1166,6 +1256,9 @@ void main() {
           'content': {
             'body': '> <@alice:example.org> Hey\n\nHello world',
             'msgtype': 'm.text',
+            'm.mentions': {
+              'user_ids': ['@alice:example.org'],
+            },
             'format': 'org.matrix.custom.html',
             'formatted_body':
                 '<mx-reply><blockquote><a href="https://matrix.to/#/!localpart:server.abc/\$replyEvent">In reply to</a> <a href="https://matrix.to/#/@alice:example.org">@alice:example.org</a><br>Hey</blockquote></mx-reply>Hello world',
@@ -1190,6 +1283,9 @@ void main() {
       expect(content, {
         'body': '> <@alice:example.org> Hello world\n\nFox',
         'msgtype': 'm.text',
+        'm.mentions': {
+          'user_ids': ['@alice:example.org'],
+        },
         'format': 'org.matrix.custom.html',
         'formatted_body':
             '<mx-reply><blockquote><a href="https://matrix.to/#/!localpart:server.abc/\$replyEvent">In reply to</a> <a href="https://matrix.to/#/@alice:example.org">@alice:example.org</a><br>Hello world</blockquote></mx-reply>Fox',
@@ -1248,7 +1344,7 @@ void main() {
     test('sendFileEvent', () async {
       final testFile = MatrixFile(bytes: Uint8List(0), name: 'file.jpeg');
       final resp = await room.sendFileEvent(testFile, txid: 'testtxid');
-      expect(resp.toString(), '\$event10');
+      expect(resp.toString(), '\$event12');
     });
 
     test('pushRuleState', () async {

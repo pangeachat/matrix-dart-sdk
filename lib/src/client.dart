@@ -68,7 +68,16 @@ class Client extends MatrixApi {
 
   final FutureOr<DatabaseApi> Function(Client)? legacyDatabaseBuilder;
 
-  final DatabaseApi database;
+  DatabaseApi _database;
+
+  DatabaseApi get database => _database;
+
+  set database(DatabaseApi db) {
+    if (isLogged()) {
+      throw Exception('You can not switch the database while being logged in!');
+    }
+    _database = db;
+  }
 
   Encryption? get encryption => _encryption;
   Encryption? _encryption;
@@ -177,7 +186,7 @@ class Client extends MatrixApi {
   /// Set [enableDehydratedDevices] to enable experimental support for enabling MSC3814 dehydrated devices.
   Client(
     this.clientName, {
-    required this.database,
+    required DatabaseApi database,
     this.legacyDatabaseBuilder,
     Set<KeyVerificationMethod>? verificationMethods,
     http.Client? httpClient,
@@ -228,7 +237,8 @@ class Client extends MatrixApi {
     /// <br/> tags:
     this.convertLinebreaksInFormatting = true,
     this.dehydratedDeviceDisplayName = 'Dehydrated Device',
-  })  : syncFilter = syncFilter ??
+  })  : _database = database,
+        syncFilter = syncFilter ??
             Filter(
               room: RoomFilter(
                 state: StateFilter(lazyLoadMembers: true),
@@ -678,7 +688,7 @@ class Client extends MatrixApi {
       identifier: identifier,
       password: password,
       token: token,
-      deviceId: deviceId,
+      deviceId: deviceId ?? deviceID,
       initialDeviceDisplayName: initialDeviceDisplayName,
       // ignore: deprecated_member_use
       user: user,
@@ -1273,12 +1283,16 @@ class Client extends MatrixApi {
   final _versionsCache =
       AsyncCache<GetVersionsResponse>(const Duration(hours: 1));
 
+  Future<GetVersionsResponse> get versionsResponse =>
+      _versionsCache.tryFetch(() => getVersions());
+
   Future<bool> authenticatedMediaSupported() async {
-    final versionsResponse = await _versionsCache.tryFetch(() => getVersions());
-    return versionsResponse.versions.any(
-          (v) => isVersionGreaterThanOrEqualTo(v, 'v1.11'),
-        ) ||
-        versionsResponse.unstableFeatures?['org.matrix.msc3916.stable'] == true;
+    return (await versionsResponse).versions.any(
+              (v) => isVersionGreaterThanOrEqualTo(v, 'v1.11'),
+            ) ||
+        (await versionsResponse)
+                .unstableFeatures?['org.matrix.msc3916.stable'] ==
+            true;
   }
 
   final _serverConfigCache = AsyncCache<MediaConfig>(const Duration(hours: 1));
@@ -1615,14 +1629,23 @@ class Client extends MatrixApi {
       // We send an empty String to remove the avatar. Sending Null **should**
       // work but it doesn't with Synapse. See:
       // https://gitlab.com/famedly/company/frontend/famedlysdk/-/issues/254
-      return setAvatarUrl(userID!, Uri.parse(''));
+      await setProfileField(
+        userID!,
+        'avatar_url',
+        {'avatar_url': Uri.parse('')},
+      );
+      return;
     }
     final uploadResp = await uploadContent(
       file.bytes,
       filename: file.name,
       contentType: file.mimeType,
     );
-    await setAvatarUrl(userID!, uploadResp);
+    await setProfileField(
+      userID!,
+      'avatar_url',
+      {'avatar_url': uploadResp.toString()},
+    );
     return;
   }
 
@@ -1798,12 +1821,19 @@ class Client extends MatrixApi {
     if (eventId == null || roomId == null) return null;
 
     // Create the room object:
-    final room = getRoomById(roomId) ??
-        await database.getSingleRoom(this, roomId) ??
-        Room(
-          id: roomId,
-          client: this,
-        );
+    var room =
+        getRoomById(roomId) ?? await database.getSingleRoom(this, roomId);
+    if (room == null) {
+      await oneShotSync()
+          .timeout(timeoutForServerRequests)
+          .catchError((_) => null);
+      room = getRoomById(roomId) ??
+          Room(
+            id: roomId,
+            client: this,
+          );
+    }
+
     final roomName = notification.roomName;
     final roomAlias = notification.roomAlias;
     if (roomName != null) {
@@ -1848,9 +1878,7 @@ class Client extends MatrixApi {
         roomId: roomId,
       );
     }
-    matrixEvent ??= await database
-        .getEventById(eventId, room)
-        .timeout(timeoutForServerRequests);
+    matrixEvent ??= await database.getEventById(eventId, room);
 
     try {
       matrixEvent ??= await getOneRoomEvent(roomId, eventId)
@@ -1877,9 +1905,8 @@ class Client extends MatrixApi {
       if (room.fullyRead == matrixEvent.eventId) {
         return null;
       }
-      final readMarkerEvent = await database
-          .getEventById(room.fullyRead, room)
-          .timeout(timeoutForServerRequests);
+      final readMarkerEvent = await database.getEventById(room.fullyRead, room);
+
       if (readMarkerEvent != null &&
           readMarkerEvent.originServerTs.isAfter(
             matrixEvent.originServerTs
@@ -1918,7 +1945,10 @@ class Client extends MatrixApi {
       var decrypted = await encryption.decryptRoomEvent(event);
       if (decrypted.messageType == MessageTypes.BadEncrypted &&
           prevBatch != null) {
-        await oneShotSync();
+        await oneShotSync()
+            .timeout(timeoutForServerRequests)
+            .catchError((_) => null);
+
         decrypted = await encryption.decryptRoomEvent(event);
       }
       event = decrypted;
@@ -2217,9 +2247,9 @@ class Client extends MatrixApi {
       _backgroundSync = true;
     } catch (e, s) {
       Logs().e('Unable to clear database', e, s);
-    } finally {
       await database.delete();
       await legacyDatabase?.delete();
+      legacyDatabase = null;
       await dispose();
     }
 
@@ -2629,13 +2659,15 @@ class Client extends MatrixApi {
       final id = entry.key;
       final syncRoomUpdate = entry.value;
 
+      final room = await _updateRoomsByRoomUpdate(id, syncRoomUpdate);
+
       // Is the timeline limited? Then all previous messages should be
       // removed from the database!
       if (syncRoomUpdate is JoinedRoomUpdate &&
           syncRoomUpdate.timeline?.limited == true) {
         await database.deleteTimelineForRoom(id);
+        room.lastEvent = null;
       }
-      final room = await _updateRoomsByRoomUpdate(id, syncRoomUpdate);
 
       final timelineUpdateType = direction != null
           ? (direction == Direction.b
@@ -2735,6 +2767,24 @@ class Client extends MatrixApi {
         Logs().d('Skip store LeftRoomUpdate for unknown room', id);
         continue;
       }
+
+      if (syncRoomUpdate is JoinedRoomUpdate &&
+          (room.lastEvent?.type == EventTypes.refreshingLastEvent ||
+              (syncRoomUpdate.timeline?.limited == true &&
+                  room.lastEvent == null))) {
+        room.lastEvent = Event(
+          originServerTs:
+              syncRoomUpdate.timeline?.events?.firstOrNull?.originServerTs ??
+                  DateTime.now(),
+          type: EventTypes.refreshingLastEvent,
+          content: {'body': 'Refreshing last event...'},
+          room: room,
+          eventId: generateUniqueTransactionId(),
+          senderId: userID!,
+        );
+        runInRoot(room.refreshLastEvent);
+      }
+
       await database.storeRoomUpdate(id, syncRoomUpdate, room.lastEvent, this);
     }
   }
@@ -2980,10 +3030,13 @@ class Client extends MatrixApi {
         rooms[roomIndex].prev_batch = chatUpdate.timeline?.prevBatch;
       }
       rooms[roomIndex].membership = membership;
-      rooms[roomIndex].notificationCount =
-          chatUpdate.unreadNotifications?.notificationCount ?? 0;
-      rooms[roomIndex].highlightCount =
-          chatUpdate.unreadNotifications?.highlightCount ?? 0;
+
+      if (chatUpdate.unreadNotifications != null) {
+        rooms[roomIndex].notificationCount =
+            chatUpdate.unreadNotifications?.notificationCount ?? 0;
+        rooms[roomIndex].highlightCount =
+            chatUpdate.unreadNotifications?.highlightCount ?? 0;
+      }
 
       final summary = chatUpdate.summary;
       if (summary != null) {
@@ -3032,17 +3085,6 @@ class Client extends MatrixApi {
           room.setState(event);
         }
         if (type != EventUpdateType.timeline) break;
-
-        // If last event is null or not a valid room preview event anyway,
-        // just use this:
-        if (room.lastEvent == null) {
-          if (shouldReplaceRoomLastEvent != null &&
-              !shouldReplaceRoomLastEvent!(null, event)) {
-            break;
-          }
-          room.lastEvent = event;
-          break;
-        }
 
         // Is this event redacting the last event?
         if (event.type == EventTypes.Redaction &&
@@ -3765,10 +3807,30 @@ class Client extends MatrixApi {
 
   /// Ignore another user. This will clear the local cached messages to
   /// hide all previous messages from this user.
-  Future<void> ignoreUser(String userId) async {
+  Future<void> ignoreUser(
+    String userId, {
+    /// Whether to also decline all invites and leave DM rooms with this user.
+    bool leaveRooms = true,
+  }) async {
     if (!userId.isValidMatrixId) {
       throw Exception('$userId is not a valid mxid!');
     }
+
+    if (leaveRooms) {
+      for (final room in rooms) {
+        final isInviteFromUser = room.membership == Membership.invite &&
+            room.getState(EventTypes.RoomMember, userID!)?.senderId == userId;
+
+        if (room.directChatMatrixID == userId || isInviteFromUser) {
+          try {
+            await room.leave();
+          } catch (e, s) {
+            Logs().w('Unable to leave room with blocked user $userId', e, s);
+          }
+        }
+      }
+    }
+
     await setAccountData(userID!, 'm.ignored_user_list', {
       'ignored_users': Map.fromEntries(
         (ignoredUsers..add(userId)).map((key) => MapEntry(key, {})),
