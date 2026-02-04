@@ -2679,6 +2679,10 @@ class FakeMatrixApi extends BaseClient {
           (var req) => {'event_id': '1234'},
       '/client/v3/rooms/!1234%3Aexample.com/redact/1143273582443PhrSn%3Aexample.org/1234':
           (var req) => {'event_id': '1234'},
+      '/client/v3/rooms/!696r7674%3Aexample.com/send/org.matrix.msc3381.poll.start/1234':
+          (var req) => {'event_id': '1234'},
+      '/client/v3/rooms/!696r7674%3Aexample.com/send/org.matrix.msc3381.poll.response/1234':
+          (var req) => {'event_id': '1234'},
       '/client/v3/pushrules/global/room/!localpart%3Aserver.abc': (var req) =>
           {},
       '/client/v3/pushrules/global/override/.m.rule.master/enabled':
@@ -2752,6 +2756,14 @@ class FakeMatrixApi extends BaseClient {
       '/client/v3/rooms/!calls%3Aexample.com/state/m.room.power_levels':
           (var reqI) => {
                 'event_id': '42',
+              },
+      '/client/v3/rooms/!calls%3Aexample.com/state/com.famedly.call.member/%40test%3AfakeServer.notExisting':
+          (var reqI) => {
+                'event_id': 'call_member_42',
+              },
+      '/client/v3/rooms/!calls%3Aexample.com/state/com.famedly.call.member/%40remoteuser%3Aexample.com':
+          (var reqI) => {
+                'event_id': 'call_member_remote_42',
               },
       '/client/v3/directory/list/room/!localpart%3Aexample.com': (var req) =>
           {},
