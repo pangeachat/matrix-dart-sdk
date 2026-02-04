@@ -1188,6 +1188,20 @@ class FakeMatrixApi extends BaseClient {
             'errcode': 'M_FORBIDDEN',
             'error': 'Blabla',
           },
+      '/client/v1/auth_metadata': (var req) => {
+            'authorization_endpoint':
+                'https://fakeserver.notexisting/oauth2/auth',
+            'code_challenge_methods_supported': ['S256'],
+            'grant_types_supported': ['authorization_code', 'refresh_token'],
+            'issuer': 'https://fakeserver.notexisting/',
+            'registration_endpoint':
+                'https://fakeserver.notexisting/oauth2/clients/register',
+            'response_modes_supported': ['query', 'fragment'],
+            'response_types_supported': ['code'],
+            'revocation_endpoint':
+                'https://fakeserver.notexisting/oauth2/revoke',
+            'token_endpoint': 'https://fakeserver.notexisting/oauth2/token',
+          },
       '/media/v3/preview_url?url=https%3A%2F%2Fmatrix.org&ts=10': (var req) => {
             'og:title': 'Matrix Blog Post',
             'og:description': 'This is a really cool blog post from matrix.org',
@@ -1338,7 +1352,7 @@ class FakeMatrixApi extends BaseClient {
             },
           },
       '/client/v3/account/whoami': (var req) =>
-          {'user_id': 'alice@example.com'},
+          {'user_id': 'alice@example.com', 'device_id': 'ABCDEFGH'},
       '/client/v3/capabilities': (var req) => {
             'capabilities': {
               'm.change_password': {'enabled': false},
@@ -2720,8 +2734,6 @@ class FakeMatrixApi extends BaseClient {
       '/client/v3/user/%40alice%3Aexample.com/rooms/1234/account_data/test.account.data':
           (var req) => {},
       '/client/v3/user/%40test%3AfakeServer.notExisting/rooms/!localpart%3Aserver.abc/account_data/m.marked_unread':
-          (var req) => {},
-      '/client/v3/user/%40test%3AfakeServer.notExisting/account_data/m.direct':
           (var req) => {},
       '/client/v3/user/%40othertest%3AfakeServer.notExisting/account_data/m.direct':
           (var req) => {},
