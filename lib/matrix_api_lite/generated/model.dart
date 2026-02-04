@@ -3501,9 +3501,7 @@ class ProfileInformation {
 
   ProfileInformation.fromJson(Map<String, Object?> json)
       : avatarUrl = ((v) => v != null
-            ? ((v as String).startsWith('mxc://')
-                ? Uri.parse(v)
-                : throw Exception('Uri not an mxc URI'))
+            ? Uri.parse(v as String)
             : null)(json['avatar_url']),
         displayname =
             ((v) => v != null ? v as String : null)(json['displayname']),
@@ -7138,9 +7136,7 @@ class CreateContentResponse {
   });
 
   CreateContentResponse.fromJson(Map<String, Object?> json)
-      : contentUri = ((json['content_uri'] as String).startsWith('mxc://')
-            ? Uri.parse(json['content_uri'] as String)
-            : throw Exception('Uri not an mxc URI')),
+      : contentUri = Uri.parse(json['content_uri'] as String),
         unusedExpiresAt =
             ((v) => v != null ? v as int : null)(json['unused_expires_at']);
   Map<String, Object?> toJson() {

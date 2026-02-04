@@ -6156,9 +6156,7 @@ class Api {
     if (response.statusCode != 200) unexpectedResponse(response, responseBody);
     final responseString = utf8.decode(responseBody);
     final json = jsonDecode(responseString);
-    return ((json['content_uri'] as String).startsWith('mxc://')
-        ? Uri.parse(json['content_uri'] as String)
-        : throw Exception('Uri not an mxc URI'));
+    return Uri.parse(json['content_uri'] as String);
   }
 
   /// This endpoint permits uploading content to an `mxc://` URI that was created
