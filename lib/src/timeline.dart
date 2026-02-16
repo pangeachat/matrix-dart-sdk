@@ -80,6 +80,9 @@ class Timeline {
   bool _fetchedAllDatabaseEvents = false;
 
   bool get canRequestHistory {
+    if (!{Membership.join, Membership.leave}.contains(room.membership)) {
+      return false;
+    }
     if (events.isEmpty) return true;
     return !_fetchedAllDatabaseEvents ||
         (room.prev_batch != null && events.last.type != EventTypes.RoomCreate);
@@ -145,7 +148,7 @@ class Timeline {
       // Look up for events in the database first. With fragmented view, we should delete the database cache
       final eventsFromStore = isFragmentedTimeline
           ? null
-          : await room.client.database?.getEventList(
+          : await room.client.database.getEventList(
               room,
               start: events.length,
               limit: historyCount,
@@ -161,7 +164,7 @@ class Timeline {
             continue;
           }
           final dbUser =
-              await room.client.database?.getUser(event.senderId, room);
+              await room.client.database.getUser(event.senderId, room);
           if (dbUser != null) room.setState(dbUser);
         }
 
@@ -274,8 +277,7 @@ class Timeline {
       if (allowNewEvent) {
         Logs().d('We now allow sync update into the timeline.');
         newEvents.addAll(
-          await room.client.database?.getEventList(room, onlySending: true) ??
-              [],
+          await room.client.database.getEventList(room, onlySending: true),
         );
       }
     }
@@ -419,11 +421,7 @@ class Timeline {
       }
     }
 
-    if (room.client.database != null) {
-      await room.client.database?.transaction(decryptFn);
-    } else {
-      await decryptFn();
-    }
+    await room.client.database.transaction(decryptFn);
     if (decryptAtLeastOneEvent) onUpdate?.call();
   }
 
@@ -612,7 +610,7 @@ class Timeline {
     }
   }
 
-  @Deprecated('Use [startSearch] instead.')
+  @Deprecated('Use [Room.searchEvent] instead.')
   Stream<List<Event>> searchEvent({
     String? searchTerm,
     int requestHistoryCount = 100,
@@ -639,6 +637,7 @@ class Timeline {
   /// ignore [searchTerm].
   /// Returns the List of Events and the next prevBatch at the end of the
   /// search.
+  @Deprecated('Use [Room.searchEvent] instead.')
   Stream<(List<Event>, String?)> startSearch({
     String? searchTerm,
     int requestHistoryCount = 100,
@@ -664,12 +663,11 @@ class Timeline {
       // Search in database
       var start = events.length;
       while (true) {
-        final eventsFromStore = await room.client.database?.getEventList(
-              room,
-              start: start,
-              limit: requestHistoryCount,
-            ) ??
-            [];
+        final eventsFromStore = await room.client.database.getEventList(
+          room,
+          start: start,
+          limit: requestHistoryCount,
+        );
         if (eventsFromStore.isEmpty) break;
         start += eventsFromStore.length;
         for (final event in eventsFromStore) {

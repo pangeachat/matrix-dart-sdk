@@ -20,6 +20,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:test/test.dart';
+import 'package:vodozemac/vodozemac.dart' as vod;
 
 import 'package:matrix/matrix.dart';
 import 'fake_client.dart';
@@ -47,6 +48,10 @@ void main() {
     }
 
     test('setupClient', () async {
+      await vod.init(
+        wasmPath: './pkg/',
+        libraryPath: './rust/target/debug/',
+      );
       client = await getClient();
       room = Room(id: '!1234:fakeServer.notExisting', client: client);
       room.setState(
@@ -238,6 +243,9 @@ void main() {
       expect(sent, {
         'msgtype': 'm.text',
         'body': '> <@test:fakeServer.notExisting> reply\n\nreply',
+        'm.mentions': {
+          'user_ids': ['@test:fakeServer.notExisting'],
+        },
         'format': 'org.matrix.custom.html',
         'formatted_body':
             '<mx-reply><blockquote><a href="https://matrix.to/#/!1234:fakeServer.notExisting/\$parent_event">In reply to</a> <a href="https://matrix.to/#/@test:fakeServer.notExisting">@test:fakeServer.notExisting</a><br>reply</blockquote></mx-reply>reply',

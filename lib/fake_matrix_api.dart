@@ -84,6 +84,7 @@ class FakeMatrixApi extends BaseClient {
     StreamSubscription<String>? sub;
     sub = currentApi!._apiCallStream.stream.listen((action) {
       if (test(action)) {
+        // ignore: discarded_futures
         sub?.cancel();
         completer.complete(action);
       }
@@ -190,6 +191,14 @@ class FakeMatrixApi extends BaseClient {
           !action.endsWith('%40alicyy%3Aexample.com') &&
           !action.contains('%40getme')) {
         res = {'displayname': '', 'membership': 'ban'};
+      } else if (method == 'GET' &&
+          action.contains('/client/v1/rooms/') &&
+          action.contains('/relations/')) {
+        res = {
+          'chunk': [],
+          'next_batch': null,
+          'prev_batch': null,
+        };
       } else if (method == 'PUT' &&
           action.contains(
             '/client/v3/rooms/!1234%3AfakeServer.notExisting/send/',
@@ -199,6 +208,18 @@ class FakeMatrixApi extends BaseClient {
           action.contains(
             '/client/v3/rooms/!1234%3AfakeServer.notExisting/state/',
           )) {
+        res = {'event_id': '\$event${_eventCounter++}'};
+      } else if (method == 'PUT' &&
+          action.contains('/client/v3/rooms/') &&
+          action.contains('/state/com.famedly.call.member/')) {
+        res = {'event_id': '\$event${_eventCounter++}'};
+      } else if (method == 'PUT' &&
+          action.contains('/client/v3/rooms/') &&
+          action.contains('/send/com.famedly.call.member.reaction/')) {
+        res = {'event_id': '\$event${_eventCounter++}'};
+      } else if (method == 'PUT' &&
+          action.contains('/client/v3/rooms/') &&
+          action.contains('/redact/')) {
         res = {'event_id': '\$event${_eventCounter++}'};
       } else if (action.contains('/client/v3/sync')) {
         // Sync requests with timeout
@@ -225,7 +246,7 @@ class FakeMatrixApi extends BaseClient {
           accountData: [sdk.BasicEvent(content: decodeJson(data), type: type)],
         );
         if (_client?.database != null) {
-          await _client?.database?.transaction(() async {
+          await _client?.database.transaction(() async {
             await _client?.handleSync(syncUpdate);
           });
         } else {
@@ -255,7 +276,7 @@ class FakeMatrixApi extends BaseClient {
           ),
         );
         if (_client?.database != null) {
-          await _client?.database?.transaction(() async {
+          await _client?.database.transaction(() async {
             await _client?.handleSync(syncUpdate);
           });
         } else {
@@ -1167,6 +1188,20 @@ class FakeMatrixApi extends BaseClient {
             'errcode': 'M_FORBIDDEN',
             'error': 'Blabla',
           },
+      '/client/v1/auth_metadata': (var req) => {
+            'authorization_endpoint':
+                'https://fakeserver.notexisting/oauth2/auth',
+            'code_challenge_methods_supported': ['S256'],
+            'grant_types_supported': ['authorization_code', 'refresh_token'],
+            'issuer': 'https://fakeserver.notexisting/',
+            'registration_endpoint':
+                'https://fakeserver.notexisting/oauth2/clients/register',
+            'response_modes_supported': ['query', 'fragment'],
+            'response_types_supported': ['code'],
+            'revocation_endpoint':
+                'https://fakeserver.notexisting/oauth2/revoke',
+            'token_endpoint': 'https://fakeserver.notexisting/oauth2/token',
+          },
       '/media/v3/preview_url?url=https%3A%2F%2Fmatrix.org&ts=10': (var req) => {
             'og:title': 'Matrix Blog Post',
             'og:description': 'This is a really cool blog post from matrix.org',
@@ -1317,7 +1352,7 @@ class FakeMatrixApi extends BaseClient {
             },
           },
       '/client/v3/account/whoami': (var req) =>
-          {'user_id': 'alice@example.com'},
+          {'user_id': 'alice@example.com', 'device_id': 'ABCDEFGH'},
       '/client/v3/capabilities': (var req) => {
             'capabilities': {
               'm.change_password': {'enabled': false},
@@ -1739,6 +1774,28 @@ class FakeMatrixApi extends BaseClient {
             'origin_server_ts': 1432735824653,
             'unsigned': {'age': 1234},
           },
+      '/client/v3/rooms/!localpart%3Aserver.abc/messages?dir=b&limit=1&filter=%7B%22types%22%3A%5B%22m.room.message%22%2C%22m.room.encrypted%22%2C%22m.sticker%22%2C%22m.call.invite%22%2C%22m.call.answer%22%2C%22m.call.reject%22%2C%22m.call.hangup%22%2C%22com.famedly.call.member%22%5D%7D':
+          (var req) => {
+                'start': 't47429-4392820_219380_26003_2265',
+                'end': 't47409-4357353_219380_26003_2265',
+                'chunk': [
+                  {
+                    'content': {
+                      'body': 'This is an example text message',
+                      'msgtype': 'm.text',
+                      'format': 'org.matrix.custom.html',
+                      'formatted_body':
+                          '<b>This is an example text message</b>',
+                    },
+                    'type': 'm.room.message',
+                    'event_id': '3143273582443PhrSn:example.org',
+                    'room_id': '!1234:example.com',
+                    'sender': '@example:example.org',
+                    'origin_server_ts': 1432735824653,
+                    'unsigned': {'age': 1234},
+                  },
+                ],
+              },
       '/client/v3/rooms/new_room_id/messages?from=emptyHistoryResponse&dir=b&limit=30&filter=%7B%22lazy_load_members%22%3Atrue%7D':
           (var req) => emptyHistoryResponse,
       '/client/v3/rooms/new_room_id/messages?from=1&dir=b&limit=30&filter=%7B%22lazy_load_members%22%3Atrue%7D':
@@ -2636,6 +2693,10 @@ class FakeMatrixApi extends BaseClient {
           (var req) => {'event_id': '1234'},
       '/client/v3/rooms/!1234%3Aexample.com/redact/1143273582443PhrSn%3Aexample.org/1234':
           (var req) => {'event_id': '1234'},
+      '/client/v3/rooms/!696r7674%3Aexample.com/send/org.matrix.msc3381.poll.start/1234':
+          (var req) => {'event_id': '1234'},
+      '/client/v3/rooms/!696r7674%3Aexample.com/send/org.matrix.msc3381.poll.response/1234':
+          (var req) => {'event_id': '1234'},
       '/client/v3/pushrules/global/room/!localpart%3Aserver.abc': (var req) =>
           {},
       '/client/v3/pushrules/global/override/.m.rule.master/enabled':
@@ -2674,8 +2735,6 @@ class FakeMatrixApi extends BaseClient {
           (var req) => {},
       '/client/v3/user/%40test%3AfakeServer.notExisting/rooms/!localpart%3Aserver.abc/account_data/m.marked_unread':
           (var req) => {},
-      '/client/v3/user/%40test%3AfakeServer.notExisting/account_data/m.direct':
-          (var req) => {},
       '/client/v3/user/%40othertest%3AfakeServer.notExisting/account_data/m.direct':
           (var req) => {},
       '/client/v3/profile/%40alice%3Aexample.com/displayname': (var reqI) => {},
@@ -2709,6 +2768,14 @@ class FakeMatrixApi extends BaseClient {
       '/client/v3/rooms/!calls%3Aexample.com/state/m.room.power_levels':
           (var reqI) => {
                 'event_id': '42',
+              },
+      '/client/v3/rooms/!calls%3Aexample.com/state/com.famedly.call.member/%40test%3AfakeServer.notExisting':
+          (var reqI) => {
+                'event_id': 'call_member_42',
+              },
+      '/client/v3/rooms/!calls%3Aexample.com/state/com.famedly.call.member/%40remoteuser%3Aexample.com':
+          (var reqI) => {
+                'event_id': 'call_member_remote_42',
               },
       '/client/v3/directory/list/room/!localpart%3Aexample.com': (var req) =>
           {},

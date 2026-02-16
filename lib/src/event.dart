@@ -16,22 +16,25 @@
  *   along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:collection/collection.dart';
 import 'package:html/parser.dart';
+import 'package:http/http.dart' as http;
 import 'package:mime/mime.dart';
 
 import 'package:matrix/matrix.dart';
 import 'package:matrix/src/utils/file_send_request_credentials.dart';
 import 'package:matrix/src/utils/html_to_text.dart';
 import 'package:matrix/src/utils/markdown.dart';
+import 'package:matrix/src/utils/multipart_request_progress.dart';
 
 abstract class RelationshipTypes {
-  static const String reply = 'm.in_reply_to';
   static const String edit = 'm.replace';
   static const String reaction = 'm.annotation';
+  static const String reference = 'm.reference';
   static const String thread = 'm.thread';
 }
 
@@ -121,7 +124,7 @@ class Event extends MatrixEvent {
     // Mark event as failed to send if status is `sending` and event is older
     // than the timeout. This should not happen with the deprecated Moor
     // database!
-    if (status.isSending && room.client.database != null) {
+    if (status.isSending) {
       // Age of this event in milliseconds
       final age = DateTime.now().millisecondsSinceEpoch -
           originServerTs.millisecondsSinceEpoch;
@@ -402,7 +405,7 @@ class Event extends MatrixEvent {
       throw Exception('Can only delete events which are not sent yet!');
     }
 
-    await room.client.database?.removeEvent(eventId, room.id);
+    await room.client.database.removeEvent(eventId, room.id);
 
     if (room.lastEvent != null && room.lastEvent!.eventId == eventId) {
       final redactedBecause = Event.fromMatrixEvent(
@@ -486,31 +489,13 @@ class Event extends MatrixEvent {
   /// event fallback if the relationship type is `m.thread`.
   /// https://spec.matrix.org/v1.14/client-server-api/#fallback-for-unthreaded-clients
   Future<Event?> getReplyEvent(Timeline timeline) async {
-    switch (relationshipType) {
-      case RelationshipTypes.reply:
-        final relationshipEventId = this.relationshipEventId;
-        return relationshipEventId == null
-            ? null
-            : await timeline.getEventById(relationshipEventId);
-
-      case RelationshipTypes.thread:
-        final relationshipContent =
-            content.tryGetMap<String, Object?>('m.relates_to');
-        if (relationshipContent == null) return null;
-        final String? relationshipEventId;
-        if (relationshipContent.tryGet<bool>('is_falling_back') == true) {
-          relationshipEventId = relationshipContent
-              .tryGetMap<String, Object?>('m.in_reply_to')
-              ?.tryGet<String>('event_id');
-        } else {
-          relationshipEventId = this.relationshipEventId;
-        }
-        return relationshipEventId == null
-            ? null
-            : await timeline.getEventById(relationshipEventId);
-      default:
-        return null;
-    }
+    final relationshipEventId = content
+        .tryGetMap<String, Object?>('m.relates_to')
+        ?.tryGetMap<String, Object?>('m.in_reply_to')
+        ?.tryGet<String>('event_id');
+    return relationshipEventId == null
+        ? null
+        : await timeline.getEventById(relationshipEventId);
   }
 
   /// If this event is encrypted and the decryption was not successful because
@@ -726,9 +711,6 @@ class Event extends MatrixEvent {
     // Is this file storeable?
     final thisInfoMap = getThumbnail ? thumbnailInfoMap : infoMap;
     final database = room.client.database;
-    if (database == null) {
-      return false;
-    }
 
     final storeable = thisInfoMap['size'] is int &&
         thisInfoMap['size'] <= database.maxFileSize;
@@ -750,6 +732,10 @@ class Event extends MatrixEvent {
     bool getThumbnail = false,
     Future<Uint8List> Function(Uri)? downloadCallback,
     bool fromLocalStoreOnly = false,
+
+    /// Callback which gets triggered on progress containing the amount of
+    /// downloaded bytes.
+    void Function(int)? onDownloadProgress,
   }) async {
     if (![EventTypes.Message, EventTypes.Sticker].contains(type)) {
       throw ("This event has the type '$type' and so it can't contain an attachment.");
@@ -772,29 +758,29 @@ class Event extends MatrixEvent {
 
     // Is this file storeable?
     final thisInfoMap = getThumbnail ? thumbnailInfoMap : infoMap;
-    var storeable = database != null &&
-        thisInfoMap['size'] is int &&
+    var storeable = thisInfoMap['size'] is int &&
         thisInfoMap['size'] <= database.maxFileSize;
 
     Uint8List? uint8list;
     if (storeable) {
-      uint8list = await room.client.database?.getFile(mxcUrl);
+      uint8list = await room.client.database.getFile(mxcUrl);
     }
 
     // Download the file
     final canDownloadFileFromServer = uint8list == null && !fromLocalStoreOnly;
     if (canDownloadFileFromServer) {
       final httpClient = room.client.httpClient;
-      downloadCallback ??= (Uri url) async => (await httpClient.get(
-            url,
-            headers: {'authorization': 'Bearer ${room.client.accessToken}'},
-          ))
-              .bodyBytes;
+      downloadCallback ??= (Uri url) async {
+        final request = http.Request('GET', url);
+        request.headers['authorization'] = 'Bearer ${room.client.accessToken}';
+
+        final response = await httpClient.send(request);
+
+        return await response.stream.toBytesWithProgress(onDownloadProgress);
+      };
       uint8list =
           await downloadCallback(await mxcUrl.getDownloadUri(room.client));
-      storeable = database != null &&
-          storeable &&
-          uint8list.lengthInBytes < database.maxFileSize;
+      storeable = storeable && uint8list.lengthInBytes < database.maxFileSize;
       if (storeable) {
         await database.storeFile(
           mxcUrl,
@@ -1016,30 +1002,30 @@ class Event extends MatrixEvent {
     return transactionId == search;
   }
 
-  /// Get the relationship type of an event. `null` if there is none
-  String? get relationshipType {
-    final mRelatesTo = content.tryGetMap<String, Object?>('m.relates_to');
-    if (mRelatesTo == null) {
-      return null;
-    }
-    final relType = mRelatesTo.tryGet<String>('rel_type');
-    if (relType == RelationshipTypes.thread) {
-      return RelationshipTypes.thread;
-    }
+  /// Get the relationship type of an event. `null` if there is none.
+  String? get relationshipType => content
+      .tryGetMap<String, Object?>('m.relates_to')
+      ?.tryGet<String>('rel_type');
 
-    if (mRelatesTo.containsKey('m.in_reply_to')) {
-      return RelationshipTypes.reply;
-    }
-    return relType;
-  }
+  /// Get the event ID that this relationship will reference and `null` if there
+  /// is none. This could for example be the thread root, the original event for
+  /// an edit or the event, this is an reaction for. For replies please use
+  /// `Event.inReplyToEventId()` instead!
+  String? get relationshipEventId => content
+      .tryGetMap<String, Object?>('m.relates_to')
+      ?.tryGet<String>('event_id');
 
-  /// Get the event ID that this relationship will reference. `null` if there is none
-  String? get relationshipEventId {
-    final relatesToMap = content.tryGetMap<String, Object?>('m.relates_to');
-    return relatesToMap?.tryGet<String>('event_id') ??
-        relatesToMap
-            ?.tryGetMap<String, Object?>('m.in_reply_to')
-            ?.tryGet<String>('event_id');
+  /// If this event is in reply to another event, this returns the event ID or
+  /// null if this event is not a reply.
+  String? inReplyToEventId({bool includingFallback = true}) {
+    final isFallback = content
+        .tryGetMap<String, Object?>('m.relates_to')
+        ?.tryGet<bool>('is_falling_back');
+    if (isFallback == true && !includingFallback) return null;
+    return content
+        .tryGetMap<String, Object?>('m.relates_to')
+        ?.tryGetMap<String, Object?>('m.in_reply_to')
+        ?.tryGet<String>('event_id');
   }
 
   /// Get whether this event has aggregated events from a certain [type]
@@ -1184,6 +1170,17 @@ class Event extends MatrixEvent {
     if (status == null) return null;
     return FileSendingStatus.values.singleWhereOrNull(
       (fileSendingStatus) => fileSendingStatus.name == status,
+    );
+  }
+
+  /// Returns the mentioned userIds and whether the event includes an @room
+  /// mention. This is only determined by the `m.mention` object in the event
+  /// content.
+  ({List<String> userIds, bool room}) get mentions {
+    final mentionsMap = content.tryGetMap<String, Object?>('m.mentions');
+    return (
+      userIds: mentionsMap?.tryGetList<String>('user_ids') ?? [],
+      room: mentionsMap?.tryGet<bool>('room') ?? false,
     );
   }
 }

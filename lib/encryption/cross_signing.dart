@@ -16,9 +16,10 @@
  *   along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+import 'dart:convert';
 import 'dart:typed_data';
 
-import 'package:olm/olm.dart' as olm;
+import 'package:vodozemac/vodozemac.dart' as vod;
 
 import 'package:matrix/encryption/encryption.dart';
 import 'package:matrix/encryption/ssss.dart';
@@ -31,26 +32,22 @@ class CrossSigning {
   CrossSigning(this.encryption) {
     encryption.ssss.setValidator(EventTypes.CrossSigningSelfSigning,
         (String secret) async {
-      final keyObj = olm.PkSigning();
       try {
-        return keyObj.init_with_seed(base64decodeUnpadded(secret)) ==
+        final keyObj = vod.PkSigning.fromSecretKey(secret);
+        return keyObj.publicKey.toBase64() ==
             client.userDeviceKeys[client.userID]!.selfSigningKey!.ed25519Key;
       } catch (_) {
         return false;
-      } finally {
-        keyObj.free();
       }
     });
     encryption.ssss.setValidator(EventTypes.CrossSigningUserSigning,
         (String secret) async {
-      final keyObj = olm.PkSigning();
       try {
-        return keyObj.init_with_seed(base64decodeUnpadded(secret)) ==
+        final keyObj = vod.PkSigning.fromSecretKey(secret);
+        return keyObj.publicKey.toBase64() ==
             client.userDeviceKeys[client.userID]!.userSigningKey!.ed25519Key;
       } catch (_) {
         return false;
-      } finally {
-        keyObj.free();
       }
     });
   }
@@ -92,14 +89,13 @@ class CrossSigning {
     final masterPrivateKey = base64decodeUnpadded(
       await handle.getStored(EventTypes.CrossSigningMasterKey),
     );
-    final keyObj = olm.PkSigning();
     String? masterPubkey;
     try {
-      masterPubkey = keyObj.init_with_seed(masterPrivateKey);
+      masterPubkey = vod.PkSigning.fromSecretKey(base64Encode(masterPrivateKey))
+          .publicKey
+          .toBase64();
     } catch (e) {
       masterPubkey = null;
-    } finally {
-      keyObj.free();
     }
     final userDeviceKeys =
         client.userDeviceKeys[client.userID]?.deviceKeys[client.deviceID];
@@ -185,23 +181,24 @@ class CrossSigning {
     }
     if (signedKeys.isNotEmpty) {
       // post our new keys!
-      final payload = <String, Map<String, Map<String, dynamic>>>{};
+      final payload = <String, Map<String, Map<String, Object?>>>{};
       for (final key in signedKeys) {
-        if (key.identifier == null ||
-            key.signatures == null ||
-            key.signatures?.isEmpty != false) {
+        final signatures = key.signatures;
+        final identifier = key.identifier;
+        if (identifier == null || signatures == null || signatures.isEmpty) {
           continue;
         }
         if (!payload.containsKey(key.userId)) {
-          payload[key.userId] = <String, Map<String, dynamic>>{};
+          payload[key.userId] = <String, Map<String, Object?>>{};
         }
         if (payload[key.userId]?[key.identifier]?['signatures'] != null) {
           // we need to merge signature objects
-          payload[key.userId]![key.identifier]!['signatures']
-              .addAll(key.signatures);
+          payload[key.userId]![key.identifier]!
+              .tryGetMap<String, Map<String, String>>('signatures')!
+              .addAll(signatures);
         } else {
           // we can just add signatures
-          payload[key.userId]![key.identifier!] = key.toJson();
+          payload[key.userId]![identifier] = key.toJson();
         }
       }
 
@@ -210,12 +207,7 @@ class CrossSigning {
   }
 
   String _sign(String canonicalJson, Uint8List key) {
-    final keyObj = olm.PkSigning();
-    try {
-      keyObj.init_with_seed(key);
-      return keyObj.sign(canonicalJson);
-    } finally {
-      keyObj.free();
-    }
+    final keyObj = vod.PkSigning.fromSecretKey(base64Encode(key));
+    return keyObj.sign(canonicalJson).toBase64();
   }
 }

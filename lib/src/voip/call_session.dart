@@ -283,12 +283,12 @@ class CallSession {
 
     setCallState(CallState.kRinging);
 
-    _ringingTimer = Timer(CallTimeouts.callInviteLifetime, () {
+    _ringingTimer = Timer(voip.timeouts!.callInviteLifetime, () {
       if (state == CallState.kRinging) {
         Logs().v('[VOIP] Call invite has expired. Hanging up.');
 
         fireCallEvent(CallStateChange.kHangup);
-        hangup(reason: CallErrorCode.inviteTimeout);
+        unawaited(hangup(reason: CallErrorCode.inviteTimeout));
       }
       _ringingTimer?.cancel();
       _ringingTimer = null;
@@ -457,7 +457,7 @@ class CallSession {
         await sendCallNegotiate(
           room,
           callId,
-          CallTimeouts.defaultCallEventLifetime.inMilliseconds,
+          voip.timeouts!.defaultCallEventLifetime.inMilliseconds,
           localPartyId,
           answer.sdp!,
           type: answer.type!,
@@ -1081,7 +1081,7 @@ class CallSession {
     if (pc!.iceGatheringState ==
         RTCIceGatheringState.RTCIceGatheringStateGathering) {
       // Allow a short time for initial candidates to be gathered
-      await Future.delayed(CallTimeouts.iceGatheringDelay);
+      await Future.delayed(voip.timeouts!.iceGatheringDelay);
     }
 
     if (callHasEnded) return;
@@ -1094,7 +1094,7 @@ class CallSession {
       await sendInviteToCall(
         room,
         callId,
-        CallTimeouts.callInviteLifetime.inMilliseconds,
+        voip.timeouts!.callInviteLifetime.inMilliseconds,
         localPartyId,
         offer.sdp!,
         capabilities: callCapabilities,
@@ -1115,9 +1115,9 @@ class CallSession {
 
       setCallState(CallState.kInviteSent);
 
-      _inviteTimer = Timer(CallTimeouts.callInviteLifetime, () {
+      _inviteTimer = Timer(voip.timeouts!.callInviteLifetime, () {
         if (state == CallState.kInviteSent) {
-          hangup(reason: CallErrorCode.inviteTimeout);
+          unawaited(hangup(reason: CallErrorCode.inviteTimeout));
         }
         _inviteTimer?.cancel();
         _inviteTimer = null;
@@ -1126,7 +1126,7 @@ class CallSession {
       await sendCallNegotiate(
         room,
         callId,
-        CallTimeouts.defaultCallEventLifetime.inMilliseconds,
+        voip.timeouts!.defaultCallEventLifetime.inMilliseconds,
         localPartyId,
         offer.sdp!,
         type: offer.type!,
@@ -1144,7 +1144,7 @@ class CallSession {
       // onNegotiationNeeded, which causes creatOffer to only include
       // audio m-line, add delay and wait for video track to be added,
       // then createOffer can get audio/video m-line correctly.
-      await Future.delayed(CallTimeouts.delayBeforeOffer);
+      await Future.delayed(voip.timeouts!.delayBeforeOffer);
       final offer = await pc!.createOffer({});
       await _gotLocalOffer(offer);
     } catch (e) {
@@ -1173,7 +1173,7 @@ class CallSession {
         final delay = direction == CallDirection.kIncoming ? 500 : 2000;
         if (_candidateSendTries == 0) {
           Timer(Duration(milliseconds: delay), () {
-            _sendCandidateQueue();
+            unawaited(_sendCandidateQueue());
           });
         }
       };
@@ -1424,7 +1424,7 @@ class CallSession {
 
       final delay = 500 * pow(2, _candidateSendTries);
       Timer(Duration(milliseconds: delay as int), () {
-        _sendCandidateQueue();
+        unawaited(_sendCandidateQueue());
       });
     }
   }

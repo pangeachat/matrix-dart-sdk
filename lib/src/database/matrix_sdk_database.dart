@@ -31,10 +31,11 @@ import 'package:matrix/src/utils/copy_map.dart';
 import 'package:matrix/src/utils/queued_to_device_event.dart';
 import 'package:matrix/src/utils/run_benchmarked.dart';
 
-import 'package:matrix/src/database/database_file_storage_stub.dart'
-    if (dart.library.io) 'package:matrix/src/database/database_file_storage_io.dart';
 import 'package:matrix/src/database/indexeddb_box.dart'
     if (dart.library.io) 'package:matrix/src/database/sqflite_box.dart';
+
+import 'package:matrix/src/database/database_file_storage_stub.dart'
+    if (dart.library.io) 'package:matrix/src/database/database_file_storage_io.dart';
 
 /// Database based on SQlite3 on native and IndexedDB on web. For native you
 /// have to pass a `Database` object, which can be created with the sqflite
@@ -170,8 +171,8 @@ class MatrixSdkDatabase extends DatabaseApi with DatabaseFileStorage {
 
   Database? database;
 
-  /// Custom IdbFactory used to create the indexedDB. On IO platforms it would
-  /// lead to an error to import "dart:indexed_db" so this is dynamically
+  /// Custom [IDBFactory] used to create the indexedDB. On IO platforms it would
+  /// lead to an error to import "package:web/web.dart" so this is dynamically
   /// typed.
   final dynamic idbFactory;
 
@@ -179,23 +180,38 @@ class MatrixSdkDatabase extends DatabaseApi with DatabaseFileStorage {
   /// like delete. Set it if you want to use sqlite FFI.
   final DatabaseFactory? sqfliteFactory;
 
-  MatrixSdkDatabase(
+  static Future<MatrixSdkDatabase> init(
+    String name, {
+    Database? database,
+    dynamic idbFactory,
+    DatabaseFactory? sqfliteFactory,
+    int maxFileSize = 0,
+    Uri? fileStorageLocation,
+    Duration? deleteFilesAfterDuration,
+  }) async {
+    final matrixSdkDatabase = MatrixSdkDatabase._(
+      name,
+      database: database,
+      idbFactory: idbFactory,
+      sqfliteFactory: sqfliteFactory,
+      maxFileSize: maxFileSize,
+      fileStorageLocation: fileStorageLocation,
+      deleteFilesAfterDuration: deleteFilesAfterDuration,
+    );
+    await matrixSdkDatabase.open();
+    return matrixSdkDatabase;
+  }
+
+  MatrixSdkDatabase._(
     this.name, {
     this.database,
     this.idbFactory,
     this.sqfliteFactory,
     this.maxFileSize = 0,
-    // TODO : remove deprecated member migration on next major release
-    @Deprecated(
-      'Breaks support for web standalone. Use [fileStorageLocation] instead.',
-    )
-    dynamic fileStoragePath,
     Uri? fileStorageLocation,
     Duration? deleteFilesAfterDuration,
   }) {
-    final legacyPath = fileStoragePath?.path;
-    this.fileStorageLocation = fileStorageLocation ??
-        (legacyPath is String ? Uri.tryParse(legacyPath) : null);
+    this.fileStorageLocation = fileStorageLocation;
     this.deleteFilesAfterDuration = deleteFilesAfterDuration;
   }
 
@@ -1577,7 +1593,7 @@ class MatrixSdkDatabase extends DatabaseApi with DatabaseFileStorage {
       _seenDeviceKeysBox.put(publicKey, deviceId);
 
   @override
-  Future<String?> deviceIdSeen(userId, deviceId) async {
+  Future<String?> deviceIdSeen(String userId, String deviceId) async {
     final raw =
         await _seenDeviceIdsBox.get(TupleKey(userId, deviceId).toString());
     if (raw == null) return null;
