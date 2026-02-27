@@ -405,29 +405,44 @@ class Room {
         .getRoomEvents(
           id,
           Direction.b,
-          limit: 1,
+          limit: 10,
           filter: jsonEncode(filter.toJson()),
         )
         .timeout(timeout);
-    final matrixEvent = result.chunk.firstOrNull;
-    if (matrixEvent == null) {
+
+    Event? event;
+    for (final matrixEvent in result.chunk) {
+      event = Event.fromMatrixEvent(
+        matrixEvent,
+        this,
+        status: EventStatus.synced,
+      );
+
+      if (client.shouldReplaceRoomLastEvent != null &&
+          !client.shouldReplaceRoomLastEvent!(lastEvent, event)) {
+        Logs().d(
+          'Skipping last event for room due to shouldReplaceRoomLastEvent callback',
+        );
+        continue;
+      }
+
+      if (event.type == EventTypes.Encrypted) {
+        final encryption = client.encryption;
+        if (encryption != null) {
+          event = await encryption.decryptRoomEvent(event);
+        }
+      }
+      break;
+    }
+
+    if (event == null) {
       if (lastEvent?.type == EventTypes.refreshingLastEvent) {
         lastEvent = null;
       }
       Logs().d('No last event found for room', id);
       return null;
     }
-    var event = Event.fromMatrixEvent(
-      matrixEvent,
-      this,
-      status: EventStatus.synced,
-    );
-    if (event.type == EventTypes.Encrypted) {
-      final encryption = client.encryption;
-      if (encryption != null) {
-        event = await encryption.decryptRoomEvent(event);
-      }
-    }
+
     lastEvent = event;
 
     Logs().d('Refreshed last event for room', id);
