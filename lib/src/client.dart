@@ -91,6 +91,8 @@ class Client extends MatrixApi {
   bool Function(Event? currentLastEvent, Event newLastEvent)?
       shouldReplaceRoomLastEvent;
 
+  bool enableLastEventRefresh;
+
   Set<String> supportedLoginTypes;
 
   bool requestHistoryOnLimitedTimeline;
@@ -231,6 +233,8 @@ class Client extends MatrixApi {
     /// A function that takes the current lastEvent and a new lastEvent and
     /// returns true if the new lastEvent should replace the current lastEvent.
     this.shouldReplaceRoomLastEvent,
+
+    this.enableLastEventRefresh = true,
 
     /// When sending a formatted message, converting linebreaks in markdown to
     /// <br/> tags:
@@ -2814,17 +2818,19 @@ class Client extends MatrixApi {
           (room.lastEvent?.type == EventTypes.refreshingLastEvent ||
               (syncRoomUpdate.timeline?.limited == true &&
                   room.lastEvent == null))) {
-        room.lastEvent = Event(
-          originServerTs:
-              syncRoomUpdate.timeline?.events?.firstOrNull?.originServerTs ??
-                  DateTime.now(),
-          type: EventTypes.refreshingLastEvent,
-          content: {'body': 'Refreshing last event...'},
-          room: room,
-          eventId: generateUniqueTransactionId(),
-          senderId: userID!,
-        );
-        runInRoot(room.refreshLastEvent);
+        if (enableLastEventRefresh) {
+          room.lastEvent = Event(
+            originServerTs:
+                syncRoomUpdate.timeline?.events?.firstOrNull?.originServerTs ??
+                    DateTime.now(),
+            type: EventTypes.refreshingLastEvent,
+            content: {'body': 'Refreshing last event...'},
+            room: room,
+            eventId: generateUniqueTransactionId(),
+            senderId: userID!,
+          );
+          runInRoot(room.refreshLastEvent);
+        }
       }
 
       await database.storeRoomUpdate(id, syncRoomUpdate, room.lastEvent, this);
