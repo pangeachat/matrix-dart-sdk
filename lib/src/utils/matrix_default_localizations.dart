@@ -327,4 +327,25 @@ class MatrixDefaultLocalizations extends MatrixLocalizations {
 
   @override
   String get pollHasBeenEnded => 'Poll has been ended';
+
+  @override
+  String userUpdatedLearningSettings(String senderName) =>
+      '$senderName updated learning settings';
+
+  @override
+  String get youUpdatedLearningSettings => 'You updated your learning settings';
+
+  @override
+  String userAddedActivityPlan(String senderName) =>
+      '$senderName added an activity plan';
+
+  @override
+  String get youAddedActivityPlan => 'You added an activity plan';
+
+  @override
+  String userSentActivitySummary(String senderName) =>
+      '$senderName sent an activity summary';
+
+  @override
+  String get youSentActivitySummary => 'You sent an activity summary';
 }

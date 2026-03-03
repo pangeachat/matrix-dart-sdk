@@ -3500,9 +3500,8 @@ class ProfileInformation {
   });
 
   ProfileInformation.fromJson(Map<String, Object?> json)
-      : avatarUrl = ((v) => v != null
-            ? Uri.parse(v as String)
-            : null)(json['avatar_url']),
+      : avatarUrl = ((v) =>
+            v != null ? Uri.parse(v as String) : null)(json['avatar_url']),
         displayname =
             ((v) => v != null ? v as String : null)(json['displayname']),
         mTz = ((v) => v != null ? v as String : null)(json['m.tz']),
