@@ -307,5 +307,23 @@ abstract class EventLocalizations {
           event.senderFromMemoryOrFallback.calcDisplayname(i18n: i18n),
         ),
     PollEventContent.endType: (event, i18n, body) => i18n.pollHasBeenEnded,
+    'pangea.bot_options': (event, i18n, body) =>
+        event.senderId == event.room.client.userID
+            ? i18n.youUpdatedLearningSettings
+            : i18n.userUpdatedLearningSettings(
+                event.senderFromMemoryOrFallback.calcDisplayname(i18n: i18n),
+              ),
+    'pangea.activity_plan': (event, i18n, body) =>
+        event.senderId == event.room.client.userID
+            ? i18n.youAddedActivityPlan
+            : i18n.userAddedActivityPlan(
+                event.senderFromMemoryOrFallback.calcDisplayname(i18n: i18n),
+              ),
+    'pangea.activity_summary': (event, i18n, body) =>
+        event.senderId == event.room.client.userID
+            ? i18n.youSentActivitySummary
+            : i18n.userSentActivitySummary(
+                event.senderFromMemoryOrFallback.calcDisplayname(i18n: i18n),
+              ),
   };
 }

@@ -191,6 +191,18 @@ abstract class MatrixLocalizations {
   String startedAPoll(String senderName);
 
   String get pollHasBeenEnded;
+
+  String get youUpdatedLearningSettings;
+
+  String userUpdatedLearningSettings(String senderName);
+
+  String get youAddedActivityPlan;
+
+  String userAddedActivityPlan(String senderName);
+
+  String get youSentActivitySummary;
+
+  String userSentActivitySummary(String senderName);
 }
 
 extension HistoryVisibilityDisplayString on HistoryVisibility {

@@ -233,7 +233,6 @@ class Client extends MatrixApi {
     /// A function that takes the current lastEvent and a new lastEvent and
     /// returns true if the new lastEvent should replace the current lastEvent.
     this.shouldReplaceRoomLastEvent,
-
     this.enableLastEventRefresh = true,
 
     /// When sending a formatted message, converting linebreaks in markdown to
