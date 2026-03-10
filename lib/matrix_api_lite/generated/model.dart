@@ -3828,7 +3828,7 @@ class Pusher implements PusherId {
         data = PusherData.fromJson(json['data'] as Map<String, Object?>),
         deviceDisplayName = json['device_display_name'] as String,
         kind = json['kind'] as String,
-        lang = json['lang'] as String,
+        lang = ((v) => v != null ? v as String : null)(json['lang']),
         profileTag =
             ((v) => v != null ? v as String : null)(json['profile_tag']);
   @override
@@ -3875,7 +3875,7 @@ class Pusher implements PusherId {
 
   /// The preferred language for receiving notifications (e.g. 'en'
   /// or 'en-US')
-  String lang;
+  String? lang;
 
   /// This string determines which set of device specific rules this
   /// pusher executes.
