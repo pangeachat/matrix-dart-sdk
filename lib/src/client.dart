@@ -1139,6 +1139,7 @@ class Client extends MatrixApi {
       await super.setUserProfile(userId, key, value);
     } catch (e) {
       Logs().d('Unable to set profile for $userId', e);
+      rethrow;
     } finally {
       await database.markUserProfileAsOutdated(userId);
     }
