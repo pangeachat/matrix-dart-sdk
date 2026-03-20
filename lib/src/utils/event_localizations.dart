@@ -325,5 +325,6 @@ abstract class EventLocalizations {
             : i18n.userSentActivitySummary(
                 event.senderFromMemoryOrFallback.calcDisplayname(i18n: i18n),
               ),
+    'p.room.notice': (event, i18n, body) => body,
   };
 }
