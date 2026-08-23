@@ -329,6 +329,10 @@ extension FamedlyCallMemberEventsExtension on Room {
           // delayed leave that will fire underneath the call about to start,
           // and joining anyway is how a call gets retracted from under its
           // own user.
+          /// Whether the scan actually turned up a delayed leave belonging to
+          /// this room and state key. Once it has, a failed cancel is fatal to
+          /// the join no matter what the server said about its capabilities.
+          var foundStaleToCancel = false;
           try {
             // get existing ones and cancel them
             final List<ScheduledDelayedEvent> alreadyScheduledEvents = [];
@@ -360,6 +364,7 @@ extension FamedlyCallMemberEventsExtension on Room {
             );
 
             for (final toCancelEvent in toCancelEvents) {
+              foundStaleToCancel = true;
               try {
                 await client.manageDelayedEvent(
                   toCancelEvent.delayId,
@@ -388,7 +393,13 @@ extension FamedlyCallMemberEventsExtension on Room {
               }
             }
           } catch (e, st) {
-            if (useDelayedEvents) rethrow;
+            // Tolerant only about ASKING. A server without delayed events
+            // cannot answer the listing, and failing the join over that would
+            // mean no calls at all there. But once a stale delayed leave for
+            // this room and state key has been found, failing to cancel it is
+            // strict whatever /versions said -- it is armed, it will fire, and
+            // it will retract the membership of the call about to start.
+            if (useDelayedEvents || foundStaleToCancel) rethrow;
             Logs().v(
               '[setFamedlyCallMemberEvent] no delayed events to clear here',
               e,

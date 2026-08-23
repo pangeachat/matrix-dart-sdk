@@ -244,7 +244,24 @@ class GroupCallSession {
   /// Set the moment a leave begins, so no further refresh starts behind it.
   bool _leaving = false;
 
-  Future<void> sendMemberStateEvent() async {
+  /// Writes this device's call membership, and REGISTERS the write.
+  ///
+  /// The barrier belongs here rather than at the timer, because the timer is
+  /// not the only caller: anything that changes what the membership says --
+  /// screen sharing, for one -- writes it directly, and a write a hang-up
+  /// never knew about lands after the retraction and puts the membership
+  /// back.
+  Future<void> sendMemberStateEvent() {
+    if (_leaving || state == GroupCallState.ended) {
+      Logs().d('[VOIP] not refreshing the membership of a call in $state');
+      return Future.value();
+    }
+    final write = _writeMemberStateEvent();
+    _membershipWrites.add(write);
+    return write.whenComplete(() => _membershipWrites.remove(write));
+  }
+
+  Future<void> _writeMemberStateEvent() async {
     // Never for a call that is over, or one on its way out. `_leaving` is the
     // one that matters: it is set before the retraction, so a refresh that
     // arrives during a hang-up declines to write rather than putting the
@@ -340,13 +357,9 @@ class GroupCallSession {
           // up after a call that has ended -- could never run.
           if (state != GroupCallState.ended &&
               state != GroupCallState.localCallFeedUninitialized) {
-            final write = sendMemberStateEvent();
-            _membershipWrites.add(write);
-            try {
-              await write;
-            } finally {
-              _membershipWrites.remove(write);
-            }
+            // Registered by sendMemberStateEvent itself, so every caller
+            // is inside the barrier and not just this one.
+            await sendMemberStateEvent();
           } else {
             Logs().d(
               '[VOIP] deteceted groupCall in state $state, removing state event',
