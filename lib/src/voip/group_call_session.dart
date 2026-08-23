@@ -339,8 +339,14 @@ class GroupCallSession {
     // said somebody was in a call their device had already torn down, and
     // kept saying it. The state is checked again inside the callback for the
     // same reason: the check that matters is the one at the moment of writing.
-    if (state == GroupCallState.ended ||
-        state == GroupCallState.localCallFeedUninitialized) {
+    //
+    // The same two states as the write guard, and for the same reason NOT
+    // `localCallFeedUninitialized`: that is the state a LiveKit call is in
+    // while it is being placed, and refusing to arm the timer there left
+    // every such call publishing its membership once and never refreshing
+    // `expires_ts` -- so a long call aged out of room state while it was
+    // still going.
+    if (_leaving || state == GroupCallState.ended) {
       return;
     }
     _resendMemberStateEventTimer = Timer.periodic(
