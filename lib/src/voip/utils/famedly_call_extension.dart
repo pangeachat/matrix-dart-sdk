@@ -265,9 +265,26 @@ extension FamedlyCallMemberEventsExtension on Room {
               ? '${client.userID!}_${client.deviceID!}'
               : client.userID!;
 
-      final useDelayedEvents = (await client.versionsResponse)
-              .unstableFeatures?['org.matrix.msc4140'] ??
-          false;
+      // Capability discovery must never decide whether a LEAVE happens. This
+      // same call writes the membership on the way in and the retraction on
+      // the way out, and `versionsResponse` is only cached for an hour -- so a
+      // /versions that times out during a long call threw here, before the
+      // state write, and took `GroupCallSession.leave()` down with it: no
+      // retraction, no backend disposal, and a peer left watching a call
+      // nobody is in. Not knowing whether the server supports delayed events
+      // means acting as though it does not.
+      var useDelayedEvents = false;
+      try {
+        useDelayedEvents = (await client.versionsResponse)
+                .unstableFeatures?['org.matrix.msc4140'] ??
+            false;
+      } catch (e, s) {
+        Logs().w(
+          'Could not read server versions; assuming no delayed events',
+          e,
+          s,
+        );
+      }
 
       final cancellerKey = '$id|$groupCallId|$application|$scope';
 
