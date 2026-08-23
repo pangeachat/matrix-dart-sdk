@@ -301,11 +301,21 @@ extension FamedlyCallMemberEventsExtension on Room {
       /// failure cleanup below reclaim only its own, never a redial's.
       String? scheduledByThisCall;
 
-      /// can use delayed events, haven't used it yet, and nobody else is in the
-      /// middle of setting one up. The reservation is taken synchronously, so
-      /// two joins racing through the awaits below cannot both schedule.
+      /// Haven't used it yet, and nobody else is in the middle of setting one
+      /// up. The reservation is taken synchronously, so two joins racing
+      /// through the awaits below cannot both schedule.
+      ///
+      /// Deliberately NOT gated on `useDelayedEvents`. The block does two
+      /// jobs, and only the second one needs the server to support MSC4140:
+      /// it first cancels any delayed leave still pending for this room and
+      /// state key, and a join has to do that whatever /versions said. A leave
+      /// whose live write failed leaves its delayed event armed on purpose --
+      /// that is what retracts the membership for us -- and if the learner
+      /// redials seconds later while /versions is still failing, skipping the
+      /// cleanup let that old leave fire and retract the NEW membership from
+      /// under a live call. On a server without delayed events the scan simply
+      /// finds nothing, or fails, and the catch below carries on.
       if (scheduleDelayedLeave &&
-          useDelayedEvents &&
           voip.delayedEventCancellers[cancellerKey] == null &&
           voip.delayedEventScheduling.add(cancellerKey)) {
         try {
@@ -366,100 +376,107 @@ extension FamedlyCallMemberEventsExtension on Room {
             }
           }
 
-          Map<String, List> newContent;
-          if (useMSC3757 || voip.useUnprotectedPerDeviceStateKeys) {
-            // scoped to deviceIds so clear the whole mems list
-            newContent = {
-              'memberships': [],
-            };
-          } else {
-            // only clear our own deviceId
-            final ownMemberships = getCallMembershipsForUser(
-              client.userID!,
-              client.deviceID!,
-              voip,
+          // Scheduling one is the half that needs the server to support it.
+          // The cleanup above is unconditional; this is not -- and skipping
+          // it must not skip the JOIN, which happens after this block either
+          // way.
+          if (useDelayedEvents) {
+            Map<String, List> newContent;
+            if (useMSC3757 || voip.useUnprotectedPerDeviceStateKeys) {
+              // scoped to deviceIds so clear the whole mems list
+              newContent = {
+                'memberships': [],
+              };
+            } else {
+              // only clear our own deviceId
+              final ownMemberships = getCallMembershipsForUser(
+                client.userID!,
+                client.deviceID!,
+                voip,
+              );
+
+              ownMemberships.removeWhere(
+                (mem) =>
+                    mem.callId == groupCallId &&
+                    mem.deviceId == client.deviceID! &&
+                    mem.application == application &&
+                    mem.scope == scope,
+              );
+
+              newContent = {
+                'memberships': List.from(ownMemberships.map((e) => e.toJson())),
+              };
+            }
+
+            final delayedLeaveEventId =
+                await client.setRoomStateWithKeyWithDelay(
+              id,
+              EventTypes.GroupCallMember,
+              stateKey,
+              voip.timeouts!.delayedEventApplyLeave.inMilliseconds,
+              newContent,
             );
 
-            ownMemberships.removeWhere(
-              (mem) =>
-                  mem.callId == groupCallId &&
-                  mem.deviceId == client.deviceID! &&
-                  mem.application == application &&
-                  mem.scope == scope,
-            );
-
-            newContent = {
-              'memberships': List.from(ownMemberships.map((e) => e.toJson())),
-            };
-          }
-
-          final delayedLeaveEventId = await client.setRoomStateWithKeyWithDelay(
-            id,
-            EventTypes.GroupCallMember,
-            stateKey,
-            voip.timeouts!.delayedEventApplyLeave.inMilliseconds,
-            newContent,
-          );
-
-          final restartDelayedLeaveEventTimer = Timer.periodic(
-            voip.timeouts!.delayedEventRestart,
-            ((timer) async {
-              // Nothing in here may throw. This runs inside a Timer callback,
-              // where an escaping error reaches no caller at all, and the timer
-              // would go on raising the same one every tick for the whole call.
-              try {
+            final restartDelayedLeaveEventTimer = Timer.periodic(
+              voip.timeouts!.delayedEventRestart,
+              ((timer) async {
+                // Nothing in here may throw. This runs inside a Timer callback,
+                // where an escaping error reaches no caller at all, and the timer
+                // would go on raising the same one every tick for the whole call.
                 try {
-                  await client.manageDelayedEvent(
-                    delayedLeaveEventId,
-                    DelayedEventAction.restart,
-                  );
-                  Logs().v(
-                    '[_restartDelayedLeaveEventTimer] heartbeat delayed event',
-                  );
-                } on MatrixException catch (e, s) {
-                  if (e.error == MatrixError.M_NOT_FOUND) {
-                    // The server has no such delayed event any more: it fired,
-                    // or something cancelled it. Beating on it cannot bring it
-                    // back, so stop rather than ask forever. Stopping comes
-                    // BEFORE the log: were logging to throw, the timer would
-                    // survive and keep asking for the rest of the call.
-                    timer.cancel();
-                    final held = voip.delayedEventCancellers[cancellerKey];
-                    if (held?.delayedEventId == delayedLeaveEventId) {
-                      voip.delayedEventCancellers.remove(cancellerKey);
-                    }
-                    Logs().w(
-                      '[_restartDelayedLeaveEventTimer] delayed leave gone, stopping heartbeat',
-                      e,
+                  try {
+                    await client.manageDelayedEvent(
+                      delayedLeaveEventId,
+                      DelayedEventAction.restart,
                     );
-                  } else {
+                    Logs().v(
+                      '[_restartDelayedLeaveEventTimer] heartbeat delayed event',
+                    );
+                  } on MatrixException catch (e, s) {
+                    if (e.error == MatrixError.M_NOT_FOUND) {
+                      // The server has no such delayed event any more: it fired,
+                      // or something cancelled it. Beating on it cannot bring it
+                      // back, so stop rather than ask forever. Stopping comes
+                      // BEFORE the log: were logging to throw, the timer would
+                      // survive and keep asking for the rest of the call.
+                      timer.cancel();
+                      final held = voip.delayedEventCancellers[cancellerKey];
+                      if (held?.delayedEventId == delayedLeaveEventId) {
+                        voip.delayedEventCancellers.remove(cancellerKey);
+                      }
+                      Logs().w(
+                        '[_restartDelayedLeaveEventTimer] delayed leave gone, stopping heartbeat',
+                        e,
+                      );
+                    } else {
+                      Logs().w(
+                        '[_restartDelayedLeaveEventTimer] could not restart the delayed leave',
+                        e,
+                        s,
+                      );
+                    }
+                  } catch (e, s) {
+                    // Kept beating. A network blip is not the event going away,
+                    // and giving up on the first would drop the crash-cleanup net
+                    // for the rest of the call.
                     Logs().w(
                       '[_restartDelayedLeaveEventTimer] could not restart the delayed leave',
                       e,
                       s,
                     );
                   }
-                } catch (e, s) {
-                  // Kept beating. A network blip is not the event going away,
-                  // and giving up on the first would drop the crash-cleanup net
-                  // for the rest of the call.
-                  Logs().w(
-                    '[_restartDelayedLeaveEventTimer] could not restart the delayed leave',
-                    e,
-                    s,
-                  );
+                } catch (_) {
+                  // Absolutely last resort, including a logger that throws.
                 }
-              } catch (_) {
-                // Absolutely last resort, including a logger that throws.
-              }
-            }),
-          );
+              }),
+            );
 
-          voip.delayedEventCancellers[cancellerKey] = DelayedEventCanceller(
-            delayedEventId: delayedLeaveEventId,
-            restartTimer: restartDelayedLeaveEventTimer,
-          );
-          scheduledByThisCall = delayedLeaveEventId;
+            voip.delayedEventCancellers[cancellerKey] = DelayedEventCanceller(
+              delayedEventId: delayedLeaveEventId,
+              restartTimer: restartDelayedLeaveEventTimer,
+            );
+            scheduledByThisCall = delayedLeaveEventId;
+          }
         } finally {
           voip.delayedEventScheduling.remove(cancellerKey);
         }
