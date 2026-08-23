@@ -192,11 +192,18 @@ class GroupCallSession {
     // A refresh already on its way to the server writes the same state key as
     // the retraction below. Letting them race put the membership back after
     // the leave removed it, and the room went on saying the user was in a
-    // call their device had ended. Waiting is bounded by the request itself,
-    // and its failure is the refresh's business, not ours.
-    try {
-      await _membershipWriteInFlight;
-    } catch (_) {}
+    // call their device had ended. So: no new refresh starts from here on,
+    // the timer that would start one is stopped, and every write already out
+    // there is waited for. Waiting is bounded by the requests themselves, and
+    // their failures are the refresh's business, not ours.
+    _leaving = true;
+    _resendMemberStateEventTimer?.cancel();
+    _resendMemberStateEventTimer = null;
+    if (_membershipWrites.isNotEmpty) {
+      await Future.wait(
+        _membershipWrites.map((write) => write.catchError((_) {})),
+      );
+    }
     try {
       await removeMemberStateEvent();
     } catch (e, s) {
@@ -223,18 +230,26 @@ class GroupCallSession {
     }
   }
 
-  /// The membership write currently in flight, if any.
+  /// Every membership write still in flight.
   ///
-  /// A hang-up has to wait for it. The refresh and the retraction write the
-  /// same state key, and a refresh that started first but landed second put
-  /// the membership back after the leave had removed it -- the room then said
-  /// the user was in a call their device had already ended.
-  Future<void>? _membershipWriteInFlight;
+  /// A hang-up has to wait for all of them. The refresh and the retraction
+  /// write the same state key, and a refresh that started first but landed
+  /// second put the membership back after the leave had removed it -- the
+  /// room then said the user was in a call their device had ended. A single
+  /// slot was not enough: the refresh is periodic, so a write slower than the
+  /// period leaves two outstanding and the older one was the one nobody
+  /// waited for.
+  final Set<Future<void>> _membershipWrites = {};
+
+  /// Set the moment a leave begins, so no further refresh starts behind it.
+  bool _leaving = false;
 
   Future<void> sendMemberStateEvent() async {
-    // Never for a call that is over. The timer's check happens a tick before
-    // this runs, and a hang-up in between is exactly the case that matters.
-    if (state == GroupCallState.ended ||
+    // Never for a call that is over, or one on its way out. The timer's check
+    // happens a tick before this runs, and a hang-up in between is exactly
+    // the case that matters.
+    if (_leaving ||
+        state == GroupCallState.ended ||
         state == GroupCallState.localCallFeedUninitialized) {
       Logs().d('[VOIP] not refreshing the membership of a call in $state');
       return;
@@ -321,13 +336,11 @@ class GroupCallSession {
           if (state != GroupCallState.ended &&
               state != GroupCallState.localCallFeedUninitialized) {
             final write = sendMemberStateEvent();
-            _membershipWriteInFlight = write;
+            _membershipWrites.add(write);
             try {
               await write;
             } finally {
-              if (identical(_membershipWriteInFlight, write)) {
-                _membershipWriteInFlight = null;
-              }
+              _membershipWrites.remove(write);
             }
           } else {
             Logs().d(
