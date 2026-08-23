@@ -189,6 +189,14 @@ class GroupCallSession {
   Future<void> leave() async {
     Object? remoteFailure;
     StackTrace? remoteStack;
+    // A refresh already on its way to the server writes the same state key as
+    // the retraction below. Letting them race put the membership back after
+    // the leave removed it, and the room went on saying the user was in a
+    // call their device had ended. Waiting is bounded by the request itself,
+    // and its failure is the refresh's business, not ours.
+    try {
+      await _membershipWriteInFlight;
+    } catch (_) {}
     try {
       await removeMemberStateEvent();
     } catch (e, s) {
@@ -215,7 +223,23 @@ class GroupCallSession {
     }
   }
 
+  /// The membership write currently in flight, if any.
+  ///
+  /// A hang-up has to wait for it. The refresh and the retraction write the
+  /// same state key, and a refresh that started first but landed second put
+  /// the membership back after the leave had removed it -- the room then said
+  /// the user was in a call their device had already ended.
+  Future<void>? _membershipWriteInFlight;
+
   Future<void> sendMemberStateEvent() async {
+    // Never for a call that is over. The timer's check happens a tick before
+    // this runs, and a hang-up in between is exactly the case that matters.
+    if (state == GroupCallState.ended ||
+        state == GroupCallState.localCallFeedUninitialized) {
+      Logs().d('[VOIP] not refreshing the membership of a call in $state');
+      return;
+    }
+
     // Get current member event ID to preserve permanent reactions
     final currentMemberships = room.getCallMembershipsForUser(
       client.userID!,
@@ -286,17 +310,34 @@ class GroupCallSession {
       voip.timeouts!.updateExpireTsTimerDuration,
       ((timer) async {
         Logs().d('sendMemberStateEvent updating member event with timer');
-        // AND, not OR. Written as `!=  ... || != ...` this was true for every
-        // state there is, so the branch below -- the one that cleans up after
-        // a call that has ended -- could never run.
-        if (state != GroupCallState.ended &&
-            state != GroupCallState.localCallFeedUninitialized) {
-          await sendMemberStateEvent();
-        } else {
-          Logs().d(
-            '[VOIP] deteceted groupCall in state $state, removing state event',
-          );
-          await removeMemberStateEvent();
+        // Nothing in here may throw. This is a Timer callback: an escaping
+        // error reaches no caller, and the timer goes on raising the same one
+        // every tick for the rest of the call. A 429 or a 5xx on one refresh
+        // is not a reason to stop refreshing.
+        try {
+          // AND, not OR. Written as `!=  ... || != ...` this was true for
+          // every state there is, so the branch below -- the one that cleans
+          // up after a call that has ended -- could never run.
+          if (state != GroupCallState.ended &&
+              state != GroupCallState.localCallFeedUninitialized) {
+            final write = sendMemberStateEvent();
+            _membershipWriteInFlight = write;
+            try {
+              await write;
+            } finally {
+              if (identical(_membershipWriteInFlight, write)) {
+                _membershipWriteInFlight = null;
+              }
+            }
+          } else {
+            Logs().d(
+              '[VOIP] deteceted groupCall in state $state, removing state event',
+            );
+            await removeMemberStateEvent();
+          }
+        } catch (e, s) {
+          Logs()
+              .w('[VOIP] a membership refresh failed; it will try again', e, s);
         }
       }),
     );
