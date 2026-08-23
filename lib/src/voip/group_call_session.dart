@@ -132,7 +132,23 @@ class GroupCallSession {
       await backend.initLocalStream(this, stream: stream);
     }
 
-    await sendMemberStateEvent();
+    try {
+      await sendMemberStateEvent();
+    } catch (_) {
+      // Entering is all-or-nothing. The local stream is open by now -- camera
+      // light on, microphone live -- and letting the failure out from here
+      // left it that way for a call that never started, with nothing owning
+      // it and no later path that disposes it.
+      _resendMemberStateEventTimer?.cancel();
+      _resendMemberStateEventTimer = null;
+      try {
+        await backend.dispose(this);
+      } catch (e, s) {
+        Logs().w('[VOIP] could not release media after a failed join', e, s);
+      }
+      setState(GroupCallState.localCallFeedUninitialized);
+      rethrow;
+    }
 
     setState(GroupCallState.entered);
 
@@ -249,11 +265,25 @@ class GroupCallSession {
     if (_resendMemberStateEventTimer != null) {
       _resendMemberStateEventTimer!.cancel();
     }
+    // Not for a call that has already ended. A refresh can be in flight when
+    // the user hangs up: leave() cancels this timer and retracts the
+    // membership, then the stalled callback resumes, writes the membership
+    // back and -- through this very line -- arms a NEW timer. The room then
+    // said somebody was in a call their device had already torn down, and
+    // kept saying it. The state is checked again inside the callback for the
+    // same reason: the check that matters is the one at the moment of writing.
+    if (state == GroupCallState.ended ||
+        state == GroupCallState.localCallFeedUninitialized) {
+      return;
+    }
     _resendMemberStateEventTimer = Timer.periodic(
       voip.timeouts!.updateExpireTsTimerDuration,
       ((timer) async {
         Logs().d('sendMemberStateEvent updating member event with timer');
-        if (state != GroupCallState.ended ||
+        // AND, not OR. Written as `!=  ... || != ...` this was true for every
+        // state there is, so the branch below -- the one that cleans up after
+        // a call that has ended -- could never run.
+        if (state != GroupCallState.ended &&
             state != GroupCallState.localCallFeedUninitialized) {
           await sendMemberStateEvent();
         } else {
