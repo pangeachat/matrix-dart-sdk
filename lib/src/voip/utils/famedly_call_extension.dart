@@ -174,29 +174,24 @@ extension FamedlyCallMemberEventsExtension on Room {
         // Belt and braces with the removal above: leaving never schedules.
         scheduleDelayedLeave: false,
       );
-    } catch (_) {
-      // The leave did not land, so we may still be in the call -- but its
-      // heartbeat was stopped above, and an unattended delayed leave fires on
-      // its own and retracts a membership we are still holding. Take it off the
-      // server before letting the failure through.
-      if (canceller != null) {
-        try {
-          await client.manageDelayedEvent(
-            canceller.delayedEventId,
-            DelayedEventAction.cancel,
-          );
-        } catch (e, s) {
-          try {
-            Logs().w(
-              '[removeFamedlyCallMemberEvent] could not cancel the delayed leave of a failed leave',
-              e,
-              s,
-            );
-          } catch (_) {
-            // Never allowed to mask the original leave failure below.
-          }
-        }
-      }
+    } catch (e, s) {
+      // The leave did not land. LEAVE THE DELAYED EVENT ARMED: it says exactly
+      // what this write was trying to say, its heartbeat has stopped, and so
+      // it fires within seconds and retracts the membership for us. Cancelling
+      // it here threw away the safety net at the one moment it was the only
+      // thing left -- a 5xx on hang-up meant the room believed the caller was
+      // still in a call until the membership expired minutes later.
+      //
+      // This is only safe because the caller's local teardown no longer
+      // depends on this write succeeding (GroupCallSession.leave), so a
+      // retraction landing a few seconds from now cannot describe a call this
+      // device is still in.
+      Logs().w(
+        '[removeFamedlyCallMemberEvent] the leave did not land; the delayed '
+        'leave stands and the server will retract it',
+        e,
+        s,
+      );
       rethrow;
     }
 
@@ -265,25 +260,39 @@ extension FamedlyCallMemberEventsExtension on Room {
               ? '${client.userID!}_${client.deviceID!}'
               : client.userID!;
 
-      // Capability discovery must never decide whether a LEAVE happens. This
-      // same call writes the membership on the way in and the retraction on
-      // the way out, and `versionsResponse` is only cached for an hour -- so a
-      // /versions that times out during a long call threw here, before the
-      // state write, and took `GroupCallSession.leave()` down with it: no
-      // retraction, no backend disposal, and a peer left watching a call
-      // nobody is in. Not knowing whether the server supports delayed events
-      // means acting as though it does not.
+      // Only a JOIN asks. Capability discovery decides one thing -- whether to
+      // schedule a delayed leave -- and a leave never schedules one, so on the
+      // way out this is not just unnecessary but harmful: `versionsResponse`
+      // is cached for an hour, so on a long call it is a network round trip
+      // sitting between the membership this function read and the write that
+      // replaces it. It threw and took `GroupCallSession.leave()` with it, and
+      // it left a window in which a redial could write its membership and have
+      // this write overwrite it from the older snapshot. Leaving now does no
+      // awaiting at all before the write.
       var useDelayedEvents = false;
-      try {
-        useDelayedEvents = (await client.versionsResponse)
-                .unstableFeatures?['org.matrix.msc4140'] ??
-            false;
-      } catch (e, s) {
-        Logs().w(
-          'Could not read server versions; assuming no delayed events',
-          e,
-          s,
-        );
+      if (scheduleDelayedLeave) {
+        for (var attempt = 0; attempt < 2 && !useDelayedEvents; attempt++) {
+          try {
+            useDelayedEvents = (await client.versionsResponse)
+                    .unstableFeatures?['org.matrix.msc4140'] ??
+                false;
+            break;
+          } catch (e, s) {
+            // Asked twice, because the cost of getting this wrong is silent:
+            // a join that concludes "no delayed events" from one failed
+            // /versions goes on to run a whole call with no server-side
+            // cleanup, so a crash leaves the peer waiting for somebody who is
+            // never coming back. Twice, and then the call happens anyway --
+            // refusing to place it would be worse.
+            Logs().w(
+              'Could not read server versions (attempt ${attempt + 1}); '
+              'without it this call has no delayed leave, so a crash will '
+              'leave its membership standing until it expires',
+              e,
+              s,
+            );
+          }
+        }
       }
 
       final cancellerKey = '$id|$groupCallId|$application|$scope';

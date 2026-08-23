@@ -153,8 +153,32 @@ class GroupCallSession {
     });
   }
 
+  /// Leaves the call, LOCALLY whatever the server says.
+  ///
+  /// Telling the room we have gone can fail -- a 5xx, a dropped connection,
+  /// a token that expired mid-call -- and it used to take the rest of this
+  /// with it: the media backend stayed up, the call stayed in the registry,
+  /// the timers kept running. The user had pressed hang up and was still in
+  /// the call, microphone live, with no way out but killing the app.
+  ///
+  /// The remote half is best effort and its failure is still reported; the
+  /// local half is not optional. The membership left standing is what the
+  /// delayed leave exists for -- the server retracts it for us.
   Future<void> leave() async {
-    await removeMemberStateEvent();
+    Object? remoteFailure;
+    StackTrace? remoteStack;
+    try {
+      await removeMemberStateEvent();
+    } catch (e, s) {
+      remoteFailure = e;
+      remoteStack = s;
+      Logs().w(
+        '[VOIP] leaving $groupCallId could not be written to the room; '
+        'tearing down locally anyway',
+        e,
+        s,
+      );
+    }
     await backend.dispose(this);
     setState(GroupCallState.localCallFeedUninitialized);
     voip.currentGroupCID = null;
@@ -164,6 +188,9 @@ class GroupCallSession {
     _resendMemberStateEventTimer?.cancel();
     _reactionsTimer?.cancel();
     setState(GroupCallState.ended);
+    if (remoteFailure != null) {
+      Error.throwWithStackTrace(remoteFailure, remoteStack!);
+    }
   }
 
   Future<void> sendMemberStateEvent() async {
