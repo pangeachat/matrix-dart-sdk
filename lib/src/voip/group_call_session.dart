@@ -128,25 +128,31 @@ class GroupCallSession {
       throw MatrixSDKVoipException('Cannot enter call in the $state state');
     }
 
-    if (state == GroupCallState.localCallFeedUninitialized) {
+    final previousState = state;
+    final openedTheStream = state == GroupCallState.localCallFeedUninitialized;
+    if (openedTheStream) {
       await backend.initLocalStream(this, stream: stream);
     }
 
     try {
       await sendMemberStateEvent();
     } catch (_) {
-      // Entering is all-or-nothing. The local stream is open by now -- camera
-      // light on, microphone live -- and letting the failure out from here
-      // left it that way for a call that never started, with nothing owning
-      // it and no later path that disposes it.
+      // Entering is all-or-nothing. If THIS call opened the local stream, the
+      // camera light is on and the microphone is live for a call that never
+      // started, owned by nobody -- so it is released. If the caller had
+      // already initialised media and handed it in, releasing it would take
+      // away something that was never ours; the session goes back to the
+      // state it was in and keeps it.
       _resendMemberStateEventTimer?.cancel();
       _resendMemberStateEventTimer = null;
-      try {
-        await backend.dispose(this);
-      } catch (e, s) {
-        Logs().w('[VOIP] could not release media after a failed join', e, s);
+      if (openedTheStream) {
+        try {
+          await backend.dispose(this);
+        } catch (e, s) {
+          Logs().w('[VOIP] could not release media after a failed join', e, s);
+        }
       }
-      setState(GroupCallState.localCallFeedUninitialized);
+      setState(previousState);
       rethrow;
     }
 

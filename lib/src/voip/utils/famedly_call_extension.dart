@@ -319,61 +319,81 @@ extension FamedlyCallMemberEventsExtension on Room {
           voip.delayedEventCancellers[cancellerKey] == null &&
           voip.delayedEventScheduling.add(cancellerKey)) {
         try {
-          // get existing ones and cancel them
-          final List<ScheduledDelayedEvent> alreadyScheduledEvents = [];
-          String? nextBatch;
-          final sEvents = await client.getScheduledDelayedEvents();
-          alreadyScheduledEvents.addAll(sEvents.scheduledEvents);
-          nextBatch = sEvents.nextBatch;
-          // The cursor is PASSED, and a non-empty one is the only reason to go
-          // round again. Without both, a server that returns any next_batch
-          // sends this asking for page one over and over, for ever.
-          while (nextBatch != null && nextBatch.isNotEmpty) {
-            final res = await client.getScheduledDelayedEvents(from: nextBatch);
-            alreadyScheduledEvents.addAll(res.scheduledEvents);
-            if (res.nextBatch == nextBatch) break;
-            nextBatch = res.nextBatch;
-          }
-
-          // Scoped to THIS room and THIS event type, not the state key alone.
-          // The state key is just the user id (or user_device), which is
-          // identical in every room -- so filtering on it by itself made
-          // joining a call in one room cancel the live delayed leave of a call
-          // still running in another.
-          final toCancelEvents = alreadyScheduledEvents.where(
-            (element) =>
-                element.stateKey == stateKey &&
-                element.roomId == id &&
-                element.type == EventTypes.GroupCallMember,
-          );
-
-          for (final toCancelEvent in toCancelEvents) {
-            try {
-              await client.manageDelayedEvent(
-                toCancelEvent.delayId,
-                DelayedEventAction.cancel,
-              );
-            } on MatrixException catch (e) {
-              // Already sent, or already cancelled: there is nothing left to
-              // cancel, which is exactly the state this loop wants. Anything else
-              // is a real failure and must NOT be swallowed -- a join that left
-              // somebody's delayed leave scheduled would have it fire underneath
-              // the call we are about to start.
-              if (e.error != MatrixError.M_NOT_FOUND) rethrow;
+          // Best effort when the server has told us, or shown us, that it has
+          // no delayed events: the scan is here to clear one a previous call
+          // left behind, and a server that cannot schedule them has none to
+          // clear. Failing the JOIN over that would mean no calls at all on
+          // any homeserver without MSC4140.
+          //
+          // Strict when they ARE supported: a cancel that failed leaves a
+          // delayed leave that will fire underneath the call about to start,
+          // and joining anyway is how a call gets retracted from under its
+          // own user.
+          try {
+            // get existing ones and cancel them
+            final List<ScheduledDelayedEvent> alreadyScheduledEvents = [];
+            String? nextBatch;
+            final sEvents = await client.getScheduledDelayedEvents();
+            alreadyScheduledEvents.addAll(sEvents.scheduledEvents);
+            nextBatch = sEvents.nextBatch;
+            // The cursor is PASSED, and a non-empty one is the only reason to go
+            // round again. Without both, a server that returns any next_batch
+            // sends this asking for page one over and over, for ever.
+            while (nextBatch != null && nextBatch.isNotEmpty) {
+              final res =
+                  await client.getScheduledDelayedEvents(from: nextBatch);
+              alreadyScheduledEvents.addAll(res.scheduledEvents);
+              if (res.nextBatch == nextBatch) break;
+              nextBatch = res.nextBatch;
             }
 
-            // Only AFTER the server agrees it is gone. The state key is shared
-            // across applications and scopes, so this event may be one THIS
-            // process still holds a canceller for; dropping that canceller before
-            // knowing the cancel worked would stop a heartbeat for a delayed
-            // event that is still scheduled, with nothing left able to cancel it.
-            final held = voip.delayedEventCancellers.entries.firstWhereOrNull(
-              (entry) => entry.value.delayedEventId == toCancelEvent.delayId,
+            // Scoped to THIS room and THIS event type, not the state key alone.
+            // The state key is just the user id (or user_device), which is
+            // identical in every room -- so filtering on it by itself made
+            // joining a call in one room cancel the live delayed leave of a call
+            // still running in another.
+            final toCancelEvents = alreadyScheduledEvents.where(
+              (element) =>
+                  element.stateKey == stateKey &&
+                  element.roomId == id &&
+                  element.type == EventTypes.GroupCallMember,
             );
-            if (held != null) {
-              held.value.restartTimer.cancel();
-              voip.delayedEventCancellers.remove(held.key);
+
+            for (final toCancelEvent in toCancelEvents) {
+              try {
+                await client.manageDelayedEvent(
+                  toCancelEvent.delayId,
+                  DelayedEventAction.cancel,
+                );
+              } on MatrixException catch (e) {
+                // Already sent, or already cancelled: there is nothing left to
+                // cancel, which is exactly the state this loop wants. Anything else
+                // is a real failure and must NOT be swallowed -- a join that left
+                // somebody's delayed leave scheduled would have it fire underneath
+                // the call we are about to start.
+                if (e.error != MatrixError.M_NOT_FOUND) rethrow;
+              }
+
+              // Only AFTER the server agrees it is gone. The state key is shared
+              // across applications and scopes, so this event may be one THIS
+              // process still holds a canceller for; dropping that canceller before
+              // knowing the cancel worked would stop a heartbeat for a delayed
+              // event that is still scheduled, with nothing left able to cancel it.
+              final held = voip.delayedEventCancellers.entries.firstWhereOrNull(
+                (entry) => entry.value.delayedEventId == toCancelEvent.delayId,
+              );
+              if (held != null) {
+                held.value.restartTimer.cancel();
+                voip.delayedEventCancellers.remove(held.key);
+              }
             }
+          } catch (e, st) {
+            if (useDelayedEvents) rethrow;
+            Logs().v(
+              '[setFamedlyCallMemberEvent] no delayed events to clear here',
+              e,
+              st,
+            );
           }
 
           // Scheduling one is the half that needs the server to support it.
