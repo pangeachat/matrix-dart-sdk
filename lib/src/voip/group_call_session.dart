@@ -245,12 +245,17 @@ class GroupCallSession {
   bool _leaving = false;
 
   Future<void> sendMemberStateEvent() async {
-    // Never for a call that is over, or one on its way out. The timer's check
-    // happens a tick before this runs, and a hang-up in between is exactly
-    // the case that matters.
-    if (_leaving ||
-        state == GroupCallState.ended ||
-        state == GroupCallState.localCallFeedUninitialized) {
+    // Never for a call that is over, or one on its way out. `_leaving` is the
+    // one that matters: it is set before the retraction, so a refresh that
+    // arrives during a hang-up declines to write rather than putting the
+    // membership back after it.
+    //
+    // NOT `localCallFeedUninitialized`. That is also the state a call is in
+    // while it is being placed -- only the mesh backend moves out of it
+    // before the membership is written, so guarding on it here stopped the
+    // LiveKit path writing any membership at all: no ring, no answer, no
+    // call. It is the END states this cares about.
+    if (_leaving || state == GroupCallState.ended) {
       Logs().d('[VOIP] not refreshing the membership of a call in $state');
       return;
     }
