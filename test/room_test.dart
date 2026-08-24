@@ -920,6 +920,17 @@ void main() {
     });
 
     test('getUserByMXID', () async {
+      // What requestUser called, without traffic requestUser cannot make.
+      // The endpoint record is global, and the client's own encryption
+      // housekeeping (kicked off unawaited by a sync's encryption.onSync)
+      // occasionally lands a /keys/claim or /keys/upload inside this test's
+      // window -- an exact match on the raw record then fails on traffic
+      // this test does not own. Key housekeeping is excluded by name;
+      // everything else still has to match exactly.
+      Iterable<String> requestUserCalls() =>
+          FakeMatrixApi.calledEndpoints.keys.where(
+            (endpoint) => !endpoint.startsWith('/client/v3/keys/'),
+          );
       final List<String> called = [];
       final List<String> called2 = [];
       // ignore: deprecated_member_use_from_same_package
@@ -932,7 +943,7 @@ void main() {
 
       FakeMatrixApi.calledEndpoints.clear();
       final user = await room.requestUser('@getme:example.com');
-      expect(FakeMatrixApi.calledEndpoints.keys, [
+      expect(requestUserCalls(), [
         '/client/v3/rooms/!localpart%3Aserver.abc/state/m.room.member/%40getme%3Aexample.com',
       ]);
       expect(user?.stateKey, '@getme:example.com');
@@ -950,7 +961,7 @@ void main() {
 
       FakeMatrixApi.calledEndpoints.clear();
       final user2 = await room.requestUser('@getmeprofile:example.com');
-      expect(FakeMatrixApi.calledEndpoints.keys, [
+      expect(requestUserCalls(), [
         '/client/v3/rooms/!localpart%3Aserver.abc/state/m.room.member/%40getmeprofile%3Aexample.com',
         '/client/v3/profile/%40getmeprofile%3Aexample.com',
       ]);
@@ -969,7 +980,7 @@ void main() {
 
       FakeMatrixApi.calledEndpoints.clear();
       final userAgain = await room.requestUser('@getme:example.com');
-      expect(FakeMatrixApi.calledEndpoints.keys, []);
+      expect(requestUserCalls(), []);
       expect(userAgain?.stateKey, '@getme:example.com');
       expect(userAgain?.calcDisplayname(), 'You got me');
       expect(userAgain?.membership, Membership.knock);
@@ -989,7 +1000,7 @@ void main() {
 
       FakeMatrixApi.calledEndpoints.clear();
       final user3 = await room.requestUser('@getmeempty:example.com');
-      expect(FakeMatrixApi.calledEndpoints.keys, [
+      expect(requestUserCalls(), [
         '/client/v3/rooms/!localpart%3Aserver.abc/state/m.room.member/%40getmeempty%3Aexample.com',
         '/client/v3/profile/%40getmeempty%3Aexample.com',
       ]);
