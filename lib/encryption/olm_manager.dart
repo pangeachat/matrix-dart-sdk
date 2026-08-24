@@ -580,7 +580,12 @@ class OlmManager {
         return event;
       }
       // retry to decrypt!
-      return _decryptToDeviceEvent(event);
+      //
+      // Awaited, so the retry's own failure lands in the catch below like the
+      // first attempt's. Returned unawaited it escaped the recovery entirely:
+      // the session was left corrupt and nothing restored it, which is the
+      // one case this catch exists for.
+      return await _decryptToDeviceEvent(event);
     } catch (_) {
       // okay, the thing errored while decrypting. It is safe to assume that the olm session is corrupt and we should generate a new one
       runInRoot(() => restoreOlmSession(event.senderId, senderKey));

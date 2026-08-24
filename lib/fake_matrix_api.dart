@@ -98,6 +98,22 @@ class FakeMatrixApi extends BaseClient {
     'https://fakeserverpriortoauthmedia.notexisting',
   };
 
+  /// The sync fixture whose URL matches [action] apart from `timeout`.
+  ///
+  /// Null when there is none, which is the ordinary case for the repeated
+  /// long-poll syncs a running client makes -- those want the empty response.
+  Function? _syncFixtureFor(String method, String action) {
+    String withoutTimeout(String url) =>
+        url.split('&').where((part) => !part.startsWith('timeout=')).join('&');
+
+    final wanted = withoutTimeout(action);
+    for (final entry in (api[method] ?? {}).entries) {
+      if (!entry.key.startsWith('/client/v3/sync')) continue;
+      if (withoutTimeout(entry.key) == wanted) return entry.value;
+    }
+    return null;
+  }
+
   FutureOr<Response> mockIntercept(Request request) async {
     // Collect data from Request
     var action = request.url.path;
@@ -227,9 +243,22 @@ class FakeMatrixApi extends BaseClient {
         if (timeout != null && timeout != '0') {
           await Future.delayed(Duration(milliseconds: 50));
         }
+        // A fixture whose URL differs only in `timeout` still counts.
+        //
+        // The sync fixtures above are keyed by an EXACT query string, and the
+        // SDK's own sync query has drifted away from them -- it no longer
+        // sends `timeout=0` on the first sync, so
+        // `/client/v3/sync?filter=1234` stopped matching
+        // `/client/v3/sync?filter=1234&timeout=0` and every client in the test
+        // suite came up with no rooms at all. Thirty-nine tests then died on
+        // `getRoomById(...)!`, in three files, all reading as a null check
+        // rather than as a fixture that had quietly stopped being served.
+        final fixture = _syncFixtureFor(method, action);
         res = {
+          if (fixture != null) ...fixture(data) as Map<String, dynamic>,
           // So that it is clear which sync we are processing prefix it with 'empty_'
-          'next_batch': 'empty_${DateTime.now().millisecondsSinceEpoch}',
+          if (fixture == null)
+            'next_batch': 'empty_${DateTime.now().millisecondsSinceEpoch}',
           // ensure we don't generate new keys for no reason
           'device_one_time_keys_count': {
             'curve25519': 10,

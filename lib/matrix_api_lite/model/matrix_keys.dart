@@ -83,17 +83,16 @@ class MatrixCrossSigningKey extends MatrixSignableKey {
   String? get publicKey => identifier;
 
   MatrixCrossSigningKey(
-    String userId,
+    super.userId,
     this.usage,
-    Map<String, String> keys,
-    Map<String, Map<String, String>> signatures, {
-    Map<String, Object?>? unsigned,
-  }) : super(userId, keys, signatures, unsigned: unsigned);
+    super.keys,
+    super.signatures, {
+    super.unsigned,
+  });
 
   @override
   String? get identifier => keys.values.first;
 
-  @override
   MatrixCrossSigningKey.fromJson(super.json)
       : usage = json.tryGetList<String>('usage') ?? [],
         super.fromJson();
@@ -114,18 +113,17 @@ class MatrixDeviceKeys extends MatrixSignableKey {
       unsigned?.tryGet<String>('device_display_name');
 
   MatrixDeviceKeys(
-    String userId,
+    super.userId,
     this.deviceId,
     this.algorithms,
-    Map<String, String> keys,
-    Map<String, Map<String, String>> signatures, {
-    Map<String, Object?>? unsigned,
-  }) : super(userId, keys, signatures, unsigned: unsigned);
+    super.keys,
+    super.signatures, {
+    super.unsigned,
+  });
 
   @override
   String? get identifier => deviceId;
 
-  @override
   MatrixDeviceKeys.fromJson(super.json)
       : algorithms = json.tryGetList<String>('algorithms') ?? [],
         deviceId = json['device_id'] as String,
