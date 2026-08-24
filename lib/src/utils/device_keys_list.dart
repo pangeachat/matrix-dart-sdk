@@ -501,7 +501,8 @@ class DeviceKeys extends SignableKey {
   @override
   Future<void> setVerified(bool newVerified, [bool sign = true]) async {
     if (!isValid) {
-      //throw Exception('setVerified called on invalid key');
+      // A key we cannot check is left alone rather than raising: callers
+      // verify in bulk, and one unusable key must not stop the rest.
       return;
     }
     await super.setVerified(newVerified, sign);
@@ -512,7 +513,7 @@ class DeviceKeys extends SignableKey {
   @override
   Future<void> setBlocked(bool newBlocked) async {
     if (!isValid) {
-      //throw Exception('setBlocked called on invalid key');
+      // As above: an unusable key is skipped, not thrown over.
       return;
     }
     _blocked = newBlocked;
