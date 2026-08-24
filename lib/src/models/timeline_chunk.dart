@@ -5,15 +5,21 @@ class TimelineChunk {
   String nextBatch;
 
   List<Event> events;
-  final Map<String, Event> eventsMap = {};
+
+  /// The chunk's events by id.
+  ///
+  /// Derived, not cached. It used to be built once in the constructor, so
+  /// every event added to [events] afterwards was invisible to it -- and
+  /// `Timeline.getEventById` went to the SERVER for an event already sitting
+  /// in memory. For an event still being sent, which the server has never
+  /// heard of, that is not a slow answer but a wrong one.
+  Map<String, Event> get eventsMap => {
+        for (final event in events) event.eventId: event,
+      };
 
   TimelineChunk({
     required this.events,
     this.prevBatch = '',
     this.nextBatch = '',
-  }) {
-    for (final event in events) {
-      eventsMap[event.eventId] = event;
-    }
-  }
+  });
 }

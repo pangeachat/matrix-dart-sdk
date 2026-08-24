@@ -66,7 +66,11 @@ Future<Client> getClient({
     newDeviceID: 'GHTYAJCE',
     newOlmAccount: pickledOlmAccount,
   );
-  await Future.delayed(Duration(milliseconds: 10));
+  // Wait for the sync `init` started, rather than for ten milliseconds and
+  // hope. The first sync carries the fixture's rooms, so a test that reads one
+  // straight after this -- `getRoomById(...)!` -- raced the response, and the
+  // work the sync sets off afterwards raced whatever the test did next.
+  await client.firstSyncReceived;
   await client.abortSync();
   return client;
 }
