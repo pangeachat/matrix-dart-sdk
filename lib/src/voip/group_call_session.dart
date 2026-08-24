@@ -128,11 +128,33 @@ class GroupCallSession {
       throw MatrixSDKVoipException('Cannot enter call in the $state state');
     }
 
-    if (state == GroupCallState.localCallFeedUninitialized) {
+    final previousState = state;
+    final openedTheStream = state == GroupCallState.localCallFeedUninitialized;
+    if (openedTheStream) {
       await backend.initLocalStream(this, stream: stream);
     }
 
-    await sendMemberStateEvent();
+    try {
+      await sendMemberStateEvent();
+    } catch (_) {
+      // Entering is all-or-nothing. If THIS call opened the local stream, the
+      // camera light is on and the microphone is live for a call that never
+      // started, owned by nobody -- so it is released. If the caller had
+      // already initialised media and handed it in, releasing it would take
+      // away something that was never ours; the session goes back to the
+      // state it was in and keeps it.
+      _resendMemberStateEventTimer?.cancel();
+      _resendMemberStateEventTimer = null;
+      if (openedTheStream) {
+        try {
+          await backend.dispose(this);
+        } catch (e, s) {
+          Logs().w('[VOIP] could not release media after a failed join', e, s);
+        }
+      }
+      setState(previousState);
+      rethrow;
+    }
 
     setState(GroupCallState.entered);
 
@@ -153,8 +175,47 @@ class GroupCallSession {
     });
   }
 
+  /// Leaves the call, LOCALLY whatever the server says.
+  ///
+  /// Telling the room we have gone can fail -- a 5xx, a dropped connection,
+  /// a token that expired mid-call -- and it used to take the rest of this
+  /// with it: the media backend stayed up, the call stayed in the registry,
+  /// the timers kept running. The user had pressed hang up and was still in
+  /// the call, microphone live, with no way out but killing the app.
+  ///
+  /// The remote half is best effort and its failure is still reported; the
+  /// local half is not optional. The membership left standing is what the
+  /// delayed leave exists for -- the server retracts it for us.
   Future<void> leave() async {
-    await removeMemberStateEvent();
+    Object? remoteFailure;
+    StackTrace? remoteStack;
+    // A refresh already on its way to the server writes the same state key as
+    // the retraction below. Letting them race put the membership back after
+    // the leave removed it, and the room went on saying the user was in a
+    // call their device had ended. So: no new refresh starts from here on,
+    // the timer that would start one is stopped, and every write already out
+    // there is waited for. Waiting is bounded by the requests themselves, and
+    // their failures are the refresh's business, not ours.
+    _leaving = true;
+    _resendMemberStateEventTimer?.cancel();
+    _resendMemberStateEventTimer = null;
+    if (_membershipWrites.isNotEmpty) {
+      await Future.wait(
+        _membershipWrites.map((write) => write.catchError((_) {})),
+      );
+    }
+    try {
+      await removeMemberStateEvent();
+    } catch (e, s) {
+      remoteFailure = e;
+      remoteStack = s;
+      Logs().w(
+        '[VOIP] leaving $groupCallId could not be written to the room; '
+        'tearing down locally anyway',
+        e,
+        s,
+      );
+    }
     await backend.dispose(this);
     setState(GroupCallState.localCallFeedUninitialized);
     voip.currentGroupCID = null;
@@ -164,9 +225,58 @@ class GroupCallSession {
     _resendMemberStateEventTimer?.cancel();
     _reactionsTimer?.cancel();
     setState(GroupCallState.ended);
+    if (remoteFailure != null) {
+      Error.throwWithStackTrace(remoteFailure, remoteStack!);
+    }
   }
 
-  Future<void> sendMemberStateEvent() async {
+  /// Every membership write still in flight.
+  ///
+  /// A hang-up has to wait for all of them. The refresh and the retraction
+  /// write the same state key, and a refresh that started first but landed
+  /// second put the membership back after the leave had removed it -- the
+  /// room then said the user was in a call their device had ended. A single
+  /// slot was not enough: the refresh is periodic, so a write slower than the
+  /// period leaves two outstanding and the older one was the one nobody
+  /// waited for.
+  final Set<Future<void>> _membershipWrites = {};
+
+  /// Set the moment a leave begins, so no further refresh starts behind it.
+  bool _leaving = false;
+
+  /// Writes this device's call membership, and REGISTERS the write.
+  ///
+  /// The barrier belongs here rather than at the timer, because the timer is
+  /// not the only caller: anything that changes what the membership says --
+  /// screen sharing, for one -- writes it directly, and a write a hang-up
+  /// never knew about lands after the retraction and puts the membership
+  /// back.
+  Future<void> sendMemberStateEvent() {
+    if (_leaving || state == GroupCallState.ended) {
+      Logs().d('[VOIP] not refreshing the membership of a call in $state');
+      return Future.value();
+    }
+    final write = _writeMemberStateEvent();
+    _membershipWrites.add(write);
+    return write.whenComplete(() => _membershipWrites.remove(write));
+  }
+
+  Future<void> _writeMemberStateEvent() async {
+    // Never for a call that is over, or one on its way out. `_leaving` is the
+    // one that matters: it is set before the retraction, so a refresh that
+    // arrives during a hang-up declines to write rather than putting the
+    // membership back after it.
+    //
+    // NOT `localCallFeedUninitialized`. That is also the state a call is in
+    // while it is being placed -- only the mesh backend moves out of it
+    // before the membership is written, so guarding on it here stopped the
+    // LiveKit path writing any membership at all: no ring, no answer, no
+    // call. It is the END states this cares about.
+    if (_leaving || state == GroupCallState.ended) {
+      Logs().d('[VOIP] not refreshing the membership of a call in $state');
+      return;
+    }
+
     // Get current member event ID to preserve permanent reactions
     final currentMemberships = room.getCallMembershipsForUser(
       client.userID!,
@@ -222,18 +332,49 @@ class GroupCallSession {
     if (_resendMemberStateEventTimer != null) {
       _resendMemberStateEventTimer!.cancel();
     }
+    // Not for a call that has already ended. A refresh can be in flight when
+    // the user hangs up: leave() cancels this timer and retracts the
+    // membership, then the stalled callback resumes, writes the membership
+    // back and -- through this very line -- arms a NEW timer. The room then
+    // said somebody was in a call their device had already torn down, and
+    // kept saying it. The state is checked again inside the callback for the
+    // same reason: the check that matters is the one at the moment of writing.
+    //
+    // The same two states as the write guard, and for the same reason NOT
+    // `localCallFeedUninitialized`: that is the state a LiveKit call is in
+    // while it is being placed, and refusing to arm the timer there left
+    // every such call publishing its membership once and never refreshing
+    // `expires_ts` -- so a long call aged out of room state while it was
+    // still going.
+    if (_leaving || state == GroupCallState.ended) {
+      return;
+    }
     _resendMemberStateEventTimer = Timer.periodic(
       voip.timeouts!.updateExpireTsTimerDuration,
       ((timer) async {
         Logs().d('sendMemberStateEvent updating member event with timer');
-        if (state != GroupCallState.ended ||
-            state != GroupCallState.localCallFeedUninitialized) {
-          await sendMemberStateEvent();
-        } else {
-          Logs().d(
-            '[VOIP] deteceted groupCall in state $state, removing state event',
-          );
-          await removeMemberStateEvent();
+        // Nothing in here may throw. This is a Timer callback: an escaping
+        // error reaches no caller, and the timer goes on raising the same one
+        // every tick for the rest of the call. A 429 or a 5xx on one refresh
+        // is not a reason to stop refreshing.
+        try {
+          // AND, not OR. Written as `!=  ... || != ...` this was true for
+          // every state there is, so the branch below -- the one that cleans
+          // up after a call that has ended -- could never run.
+          if (state != GroupCallState.ended &&
+              state != GroupCallState.localCallFeedUninitialized) {
+            // Registered by sendMemberStateEvent itself, so every caller
+            // is inside the barrier and not just this one.
+            await sendMemberStateEvent();
+          } else {
+            Logs().d(
+              '[VOIP] deteceted groupCall in state $state, removing state event',
+            );
+            await removeMemberStateEvent();
+          }
+        } catch (e, s) {
+          Logs()
+              .w('[VOIP] a membership refresh failed; it will try again', e, s);
         }
       }),
     );

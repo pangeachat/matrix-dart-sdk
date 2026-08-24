@@ -81,6 +81,35 @@ class VoIP {
   /// only used in livekit calls
   final int keyRingSize;
 
+  /// The scheduled delayed leave event for each call, keyed by
+  /// `roomId|groupCallId|application|scope`, together with the heartbeat
+  /// keeping it alive.
+  ///
+  /// Known limitation, inherited from the delayed-event design rather than from
+  /// this map: a delayed leave carries a whole state-event body for the
+  /// GroupCallMember state key, and that key is per DEVICE, not per call. Two
+  /// calls running in one room at once therefore cannot each hold a meaningful
+  /// delayed leave -- the second to schedule replaces the first, and a crash
+  /// would retract only the second call's membership. Closing that needs one
+  /// composed delayed leave per state key rather than per call. Not reachable
+  /// from 1:1 calling, where a room holds at most one call at a time.
+  ///
+  /// Per call, not per process. One shared pair of these meant only the FIRST
+  /// call in the app ever scheduled a delayed leave -- every later call found
+  /// the global already set and skipped scheduling -- and a single failed
+  /// cancel left it populated for good, silently disabling the crash-cleanup
+  /// net for the rest of the process.
+  final delayedEventCancellers = <String, DelayedEventCanceller>{};
+
+  /// Keys currently scheduling a delayed leave.
+  ///
+  /// [delayedEventCancellers] cannot answer "is one being set up right now":
+  /// its entry only exists once scheduling has finished, and scheduling spans
+  /// several awaits. Two joins racing through that window would both schedule,
+  /// and only the last would be recorded -- leaving the other's heartbeat
+  /// beating forever with nothing able to cancel it.
+  final delayedEventScheduling = <String>{};
+
   // default values set in super constructor
   CallTimeouts? timeouts;
 
