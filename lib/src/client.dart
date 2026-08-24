@@ -2467,7 +2467,18 @@ class Client extends MatrixApi {
         () async => await _currentTransaction,
         syncResp.itemCount,
       );
-      if (_disposed || _aborted) return;
+      // `_aborted` is not enough here. `abortSync` sets it, waits for the
+      // database transaction, and then sets it back to false so a sync can be
+      // started again -- which for a sync already this far along means every
+      // later guard sees `false` and the tail below runs anyway: device keys
+      // refreshed, to-device queue drained, writes issued against a database
+      // `dispose` is in the middle of closing. `_currentSyncId` is the durable
+      // signal: `abortSync` sets it to -1 and only the NEXT sync claims it
+      // again, so an aborted or superseded sync stops here -- which is what
+      // "blackholes any ongoing sync call" was always meant to mean.
+      if (_disposed || _aborted || _currentSyncId != syncRequest.hashCode) {
+        return;
+      }
       _prevBatch = syncResp.nextBatch;
       onSyncStatus.add(SyncStatusUpdate(SyncStatus.cleaningUp));
       // ignore: unawaited_futures

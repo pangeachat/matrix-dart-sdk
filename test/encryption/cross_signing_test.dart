@@ -38,6 +38,17 @@ void main() {
 
       client = await getClient();
       await client.abortSync();
+
+      // The 'sign' test signs @othertest's master key, but @othertest shares
+      // no encrypted room with us, so they are not a tracked user: their keys
+      // exist only because the fake server volunteers them in every
+      // /keys/query response, and the NEXT updateUserDeviceKeys run correctly
+      // prunes untracked users. Whether that next run happens before 'sign'
+      // is scheduling -- this was a 1-in-3 CI failure. Track them explicitly,
+      // the same way key verification tracks a user it is about to verify.
+      await client.updateUserDeviceKeys(
+        additionalUsers: {'@othertest:fakeServer.notExisting'},
+      );
     });
 
     test('basic things', () async {

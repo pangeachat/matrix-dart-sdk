@@ -66,11 +66,29 @@ Future<Client> getClient({
     newDeviceID: 'GHTYAJCE',
     newOlmAccount: pickledOlmAccount,
   );
-  // Wait for the sync `init` started, rather than for ten milliseconds and
-  // hope. The first sync carries the fixture's rooms, so a test that reads one
-  // straight after this -- `getRoomById(...)!` -- raced the response, and the
-  // work the sync sets off afterwards raced whatever the test did next.
+  // Wait for the sync `init` started to FINISH, rather than for ten
+  // milliseconds and hope. The first sync carries the fixture's rooms, so a
+  // test that reads one straight after this -- `getRoomById(...)!` -- raced
+  // the response.
+  //
+  // And `firstSyncReceived` alone is not the finish: it completes when the
+  // response has been applied, while the sync goes on to refresh device keys
+  // and drain the to-device queue. Aborting inside that tail made the tests'
+  // starting world a coin flip -- device keys pruned on some runs and not on
+  // others (the CI coverage job's intermittent reds). Waiting for the sync to
+  // report done means every test starts from the SAME world: the first
+  // sync's work has happened, all of it, every time.
   await client.firstSyncReceived;
+  await client.onSyncStatus.stream
+      .firstWhere(
+        (update) =>
+            update.status == SyncStatus.finished ||
+            update.status == SyncStatus.error,
+      )
+      .timeout(
+        const Duration(seconds: 10),
+        onTimeout: () => SyncStatusUpdate(SyncStatus.error),
+      );
   await client.abortSync();
   return client;
 }

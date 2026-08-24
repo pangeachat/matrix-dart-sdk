@@ -269,7 +269,15 @@ void main() {
           },
         }),
       );
-      await Future.delayed(Duration(milliseconds: 50));
+      // No sleep here on purpose. `handleSync` awaits the device-list
+      // handling, so both assertions below are already true when it returns --
+      // and a sleep is exactly what let them stop being true. A sync that was
+      // already in flight when this test called `abortSync` keeps going (abort
+      // waits for the database transaction, not for the sync), and it ends in
+      // `updateUserDeviceKeys`, which clears `outdated`. FakeMatrixApi delays a
+      // long-poll sync by 50ms, so a 50ms wait here landed right on top of it:
+      // `Expected: <true> Actual: <false>`, on a loaded runner, in a test that
+      // has nothing to do with syncing.
       expect(matrix.userDeviceKeys.length, 3);
       expect(matrix.userDeviceKeys['@alice:example.com']?.outdated, true);
 
