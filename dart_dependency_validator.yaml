@@ -1,0 +1,7 @@
+# The example is not part of this package: it has no pubspec of its own, it is
+# already excluded from the analyzer (analysis_options.yaml), and it imports
+# Flutter -- which a pure-Dart SDK must not require in order to resolve.
+# Scanning it made this check ask for flutter, path_provider, provider and
+# sqflite as dev_dependencies of a package that uses none of them.
+exclude:
+  - "example/**"

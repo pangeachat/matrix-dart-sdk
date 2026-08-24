@@ -246,10 +246,10 @@ class CallSession {
 
               /// These fixes do not work all the time because sometimes the code
               /// is at an unrecoverable stage (invite already sent when we were
-              /// checking if we want to send a invite), so commented out answering
-              /// automatically to prevent unknown cases
-              // await answer();
-              // return;
+              /// checking if we want to send a invite), so answering
+              /// automatically is deliberately NOT done here -- it would act
+              /// on a call already past the point where the answer means
+              /// anything.
             }
           } else {
             Logs().d(
@@ -666,7 +666,6 @@ class CallSession {
   }
 
   Future<void> _addRemoteStream(MediaStream stream) async {
-    //final userId = remoteUser.id;
     final metadata = _remoteSDPStreamMetadata?.sdpStreamMetadatas[stream.id];
     if (metadata == null) {
       Logs().i(
