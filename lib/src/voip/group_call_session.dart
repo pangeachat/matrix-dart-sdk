@@ -121,8 +121,33 @@ class GroupCallSession {
   Timer? _reactionsTimer;
   int _reactionsTicker = 0;
 
-  /// enter the group call.
-  Future<void> enter({WrappedMediaStream? stream}) async {
+  /// Enter the group call. Returns the event id of the membership this join
+  /// published.
+  ///
+  /// That id is the only thing about the write that is unique to it. Nothing
+  /// the membership carries distinguishes two calls placed by one process:
+  /// `call_id` is the room, `membershipId` is [VoIP.currentSessionId] and is
+  /// fixed for the life of the [VoIP] object, the device id and the rest never
+  /// move, and `expires_ts` is only the clock. Nor can the membership be
+  /// recognised by reading room state back -- the previous call's membership
+  /// stands there until it expires, and a write that syncs late, or a device
+  /// clock that steps backwards, defeats every attempt to tell the two apart.
+  /// So a caller that has to name the call it just started has this and
+  /// nothing else.
+  ///
+  /// It names the JOIN, and it does not follow the call. The periodic refresh
+  /// republishes the membership and the server mints a new event for it, so a
+  /// couple of minutes in, the id in room state is no longer this one. Keep
+  /// what `enter` handed back rather than re-deriving it from state, and do
+  /// not relate events to it -- [sendMemberStateEvent] returns the id of the
+  /// write it just made, which is the one state actually holds.
+  ///
+  /// Null only when no membership was written at all. `enter` rejects the
+  /// states a finished call is in, so an ordinary join has an id -- but a
+  /// `leave` still in flight on this session suppresses the write without
+  /// changing the state `enter` checks, and a caller that enters into that
+  /// window gets null and has published nothing.
+  Future<String?> enter({WrappedMediaStream? stream}) async {
     if (!(state == GroupCallState.localCallFeedUninitialized ||
         state == GroupCallState.localCallFeedInitialized)) {
       throw MatrixSDKVoipException('Cannot enter call in the $state state');
@@ -134,8 +159,9 @@ class GroupCallSession {
       await backend.initLocalStream(this, stream: stream);
     }
 
+    final String? membershipEventId;
     try {
-      await sendMemberStateEvent();
+      membershipEventId = await sendMemberStateEvent();
     } catch (_) {
       // Entering is all-or-nothing. If THIS call opened the local stream, the
       // camera light is on and the microphone is live for a call that never
@@ -173,6 +199,8 @@ class GroupCallSession {
     _reactionsTimer = Timer.periodic(Duration(seconds: 1), (_) {
       if (_reactionsTicker > 0) _reactionsTicker--;
     });
+
+    return membershipEventId;
   }
 
   /// Leaves the call, LOCALLY whatever the server says.
@@ -251,17 +279,24 @@ class GroupCallSession {
   /// screen sharing, for one -- writes it directly, and a write a hang-up
   /// never knew about lands after the retraction and puts the membership
   /// back.
-  Future<void> sendMemberStateEvent() {
+  ///
+  /// Returns the event id the server gave the membership it wrote, or null
+  /// when it declined to write -- a call on its way out, or one already over.
+  /// The periodic refresh writes through here too and is handed the id of its
+  /// own write, so the value always describes the write the caller just asked
+  /// for. Nothing here keeps a copy, so there is no stale one to read: a
+  /// caller that wants an id holds the one it was given.
+  Future<String?> sendMemberStateEvent() {
     if (_leaving || state == GroupCallState.ended) {
       Logs().d('[VOIP] not refreshing the membership of a call in $state');
-      return Future.value();
+      return Future.value(null);
     }
     final write = _writeMemberStateEvent();
     _membershipWrites.add(write);
     return write.whenComplete(() => _membershipWrites.remove(write));
   }
 
-  Future<void> _writeMemberStateEvent() async {
+  Future<String?> _writeMemberStateEvent() async {
     // Never for a call that is over, or one on its way out. `_leaving` is the
     // one that matters: it is set before the retraction, so a refresh that
     // arrives during a hang-up declines to write rather than putting the
@@ -274,7 +309,7 @@ class GroupCallSession {
     // call. It is the END states this cares about.
     if (_leaving || state == GroupCallState.ended) {
       Logs().d('[VOIP] not refreshing the membership of a call in $state');
-      return;
+      return null;
     }
 
     // Get current member event ID to preserve permanent reactions
@@ -346,8 +381,12 @@ class GroupCallSession {
     // every such call publishing its membership once and never refreshing
     // `expires_ts` -- so a long call aged out of room state while it was
     // still going.
+    //
+    // The id is still returned here: the membership above WAS written, and
+    // saying otherwise would deny a caller the one thing that identifies the
+    // write it just made.
     if (_leaving || state == GroupCallState.ended) {
-      return;
+      return newEventId;
     }
     _resendMemberStateEventTimer = Timer.periodic(
       voip.timeouts!.updateExpireTsTimerDuration,
@@ -378,6 +417,8 @@ class GroupCallSession {
         }
       }),
     );
+
+    return newEventId;
   }
 
   Future<void> removeMemberStateEvent() {
