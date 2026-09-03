@@ -1,0 +1,142 @@
+# Local copy of famedly/frontend-ci-templates/.github/workflows/dart.yml, pinned.
+#
+# WHY THIS EXISTS: that template runs `dart pub global activate dependency_validator`
+# UNVERSIONED, so every CI run takes the latest release. dependency_validator 5.0.6
+# (published 2026-08-26) has a parser regression: it rejects valid `var`/`final`
+# modifiers across this codebase (2022- and 2024-era code), failing every PR while
+# 5.0.5 passes clean. This file is a byte-for-byte copy of the upstream template with
+# ONE line changed -- the activate is pinned to 5.0.5, the last good release.
+#
+# It is NOT a weakened gate: dependency_validator still runs and still checks unused/
+# missing dependencies; it just uses a version that can parse valid Dart.
+#
+# REVISIT: delete this file and restore `uses: famedly/.../dart.yml@main` in
+# integrate.yml once dependency_validator ships a fix (>5.0.6) or famedly pins it
+# upstream. Track the upstream regression before un-pinning.
+name: "Run dart specific github actions"
+
+on:
+  workflow_call:
+    inputs:
+      env_file:
+        description: "Path to an .env file to read flutter_version and/or dart_version from."
+        type: string
+        required: false
+      directory:
+        description: "The subdirectory for the dart project, defaults to the current directory."
+        type: string
+        required: false
+        default: ""
+      ignore_formatting:
+        description: "A subdirectory which is ignored in the format check by formatting it before."
+        type: string
+        required: false
+        default: ""
+    secrets:
+      ssh_key:
+        description: "SSH key to pull private dependencies"
+        required: false
+      famedly_github_token:
+        description: "GitHub token to pull private dependencies over HTTPS"
+        required: false
+
+jobs:
+  dart_analyzer:
+    runs-on: ubuntu-latest
+    env:
+      env_file: ${{ inputs.env_file }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read env file
+        if: env.env_file != ''
+        run: cat ${{ env.env_file }} >> $GITHUB_ENV
+      - uses: dart-lang/setup-dart@a57a6c04cf7d4840e88432aad6281d1e125f0d46
+        if: env.dart_version != ''
+        with:
+          sdk: ${{ env.dart_version }}
+      - uses: subosito/flutter-action@48cafc24713cca54bbe03cdc3a423187d413aafa
+        with:
+          flutter-version: ${{ env.flutter_version }}
+          cache: true
+      - uses: actions/cache@v4
+        with:
+          path: ~/.pub-cache
+          key: ${{ runner.os }}-${{ hashFiles('**/pubspec.lock') }}
+      - name: Enable pulling private dependencies
+        uses: famedly/frontend-ci-templates/.github/actions/dart-prepare@d37619c266dc70c39c94e61d45cbb64e2c43ef7e
+        with:
+          ssh_key: "${{ secrets.ssh_key }}"
+          famedly_github_token: "${{ secrets.famedly_github_token }}"
+          container_mode: "false"
+      - name: Fetch dependencies
+        id: deps
+        working-directory: ${{ inputs.directory }}
+        run: |
+          flutter pub get
+      - name: Check if pubspec.lock is up to date
+        run: git check-ignore -q pubspec.lock || git diff --exit-code pubspec.lock
+        working-directory: ${{ inputs.directory }}
+      - run: dart format ${{ inputs.ignore_formatting }}
+        if: inputs.ignore_formatting != ''
+      - name: Check formatting
+        working-directory: ${{ inputs.directory }}
+        run: |
+          dart format lib integration_test test test_driver || (echo '```diff' >> "$GITHUB_STEP_SUMMARY"; git diff >> "$GITHUB_STEP_SUMMARY"; echo '```' >> "$GITHUB_STEP_SUMMARY"; exit 1)
+      - name: Run analyzer
+        working-directory: ${{ inputs.directory }}
+        if: success() || (failure() && steps.deps.conclusion == 'success')
+        run: |
+          flutter analyze
+      - name: Check for commented-out Dart code with semicolons
+        run: |
+          if grep -R --include="*.dart" -nE '^[[:space:]]*//[^/<].*;[[:space:]]*$' lib/; then
+            echo ""
+            echo "❌ Found commented-out Dart code ending with semicolon."
+            exit 1
+          fi
+        working-directory: ${{ inputs.directory }}
+      - name: Search unused dependencies
+        run: |
+          dart pub global activate dependency_validator 5.0.5
+          dart pub global run dependency_validator
+        working-directory: ${{ inputs.directory }}
+      - name: Check if dart_code_linter is present
+        id: check_linter
+        continue-on-error: true
+        working-directory: ${{ inputs.directory }}
+        run: |
+          if grep -q 'dart_code_linter:' pubspec.yaml; then
+            echo "has_linter=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_linter=false" >> $GITHUB_OUTPUT
+            echo "::warning::dart_code_linter not found in pubspec.yaml, skipping linter checks"
+            exit 1
+          fi
+      - name: Dart Code linter
+        if: steps.check_linter.outputs.has_linter == 'true'
+        run: dart run dart_code_linter:metrics analyze lib --reporter=github
+        working-directory: ${{ inputs.directory }}
+      - name: Check for unused files
+        if: steps.check_linter.outputs.has_linter == 'true'
+        run: dart run dart_code_linter:metrics check-unused-files lib
+        working-directory: ${{ inputs.directory }}
+      - name: Check for unused code
+        if: steps.check_linter.outputs.has_linter == 'true'
+        run: dart run dart_code_linter:metrics check-unused-code lib --exclude="{**/generated/**.dart,**.g.dart,**.freezed.dart,**/l10n/**}"
+        working-directory: ${{ inputs.directory }}
+      - name: Check for unused translations and arb sorting
+        run: |
+          if [ ! -f l10n.yaml ]; then
+            echo "::notice::No l10n.yaml found at project root, skipping sweeper check"
+            exit 0
+          fi
+          dart pub global activate sweeper
+          result=0
+          dart pub global run sweeper check || result=1
+          dart pub global run sweeper sort
+          if ! git diff --exit-code -- '*.arb'; then
+            echo "❌ arb files are not sorted. Run 'sweeper sort' and commit the changes." >> "$GITHUB_STEP_SUMMARY"
+            result=1
+          fi
+          exit $result
+        working-directory: ${{ inputs.directory }}

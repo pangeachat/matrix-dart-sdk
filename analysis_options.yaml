@@ -47,4 +47,3 @@ analyzer:
     todo: ignore
   exclude:
     - example/main.dart
-  plugins:
