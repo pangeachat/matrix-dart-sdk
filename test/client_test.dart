@@ -23,6 +23,7 @@ import 'dart:typed_data';
 
 import 'package:canonical_json/canonical_json.dart';
 import 'package:collection/collection.dart';
+import 'package:http/http.dart' show ClientException;
 import 'package:path/path.dart' show join;
 import 'package:test/test.dart';
 import 'package:vodozemac/vodozemac.dart' as vod;
@@ -1586,6 +1587,44 @@ void main() {
         storedClient?.tryGet<String>('refresh_token'),
         'another_new_token',
       );
+      await client.dispose();
+    });
+
+    test(
+        'handleSoftLogout keeps the session when the refresh never reaches '
+        'the server', () async {
+      final client = await getClient();
+      client.backgroundSync = false;
+      // The fake answers /refresh with a 5 minute token, so the session now
+      // has an expiry for ensureNotSoftLoggedOut to act on.
+      await client.refreshAccessToken();
+      client.onSoftLogout = (client) async {
+        // What package:http raises when the device is offline.
+        throw ClientException('Failed to fetch');
+      };
+      await client.ensureNotSoftLoggedOut(const Duration(minutes: 10));
+      expect(client.isLogged(), true);
+      final storedClient = await client.database.getClient(client.clientName);
+      expect(storedClient?.tryGet<String>('token'), 'a_new_token');
+      await client.dispose();
+    });
+
+    test('handleSoftLogout signs out when the server rejects the refresh',
+        () async {
+      final client = await getClient();
+      client.backgroundSync = false;
+      await client.refreshAccessToken();
+      client.onSoftLogout = (client) async {
+        throw MatrixException.fromJson({
+          'errcode': 'M_UNKNOWN_TOKEN',
+          'error': 'Invalid refresh token',
+        });
+      };
+      await expectLater(
+        client.ensureNotSoftLoggedOut(const Duration(minutes: 10)),
+        throwsA(isA<MatrixException>()),
+      );
+      expect(client.isLogged(), false);
       await client.dispose();
     });
 
