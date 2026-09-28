@@ -2370,10 +2370,20 @@ class Client extends MatrixApi {
       try {
         await onSoftLogout(this);
         onLoginStateChanged.add(LoginState.loggedIn);
-      } catch (e, s) {
+      } on MatrixException catch (e, s) {
+        // The homeserver rejected the refresh: the session is gone.
         Logs().w('Unable to refresh session after soft logout', e, s);
         await logout();
         rethrow;
+      } catch (e, s) {
+        // Offline, unreachable or timed out: the session may still be valid,
+        // so keep it and let the next sync try again (upstream e62de167).
+        Logs().w(
+          'Unable to refresh session after soft logout. Trying again later.',
+          e,
+          s,
+        );
+        return;
       }
     }();
     await _handleSoftLogoutFuture;
