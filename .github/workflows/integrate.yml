@@ -155,7 +155,7 @@ jobs:
       - name: Run tests
         run: |
           dart pub get
-          dart test test/box_test.dart --platform chrome
+          dart test test/box_test.dart test/indexeddb_box_web_test.dart --platform chrome
 
   pub-dev-dry-run:
     runs-on: ubuntu-latest

@@ -28,6 +28,8 @@ class BoxCollection with ZoneTransactionMixin {
     final request = idbFactory.open(name, version);
 
     request.onerror = (Event event) {
+      // A failed upgrade has already been reported by `db.onerror` below.
+      if (dbOpenCompleter.isCompleted) return;
       Logs().e(
         '[IndexedDBBox] Error loading database - ${request.error?.toString()}',
       );
@@ -40,6 +42,10 @@ class BoxCollection with ZoneTransactionMixin {
       final db = (event.target! as IDBOpenDBRequest).result as IDBDatabase;
 
       db.onerror = (Event event) {
+        // This handler stays on the database after it opens, and every later
+        // request error bubbles up to it. Only an error during the open is
+        // ours to report.
+        if (dbOpenCompleter.isCompleted) return;
         Logs().e('[IndexedDBBox] [onupgradeneeded] Error loading database');
         dbOpenCompleter
             .completeError('Error loading database onupgradeneeded.');
@@ -98,6 +104,9 @@ class BoxCollection with ZoneTransactionMixin {
         }
 
         txn.onerror = (Event event) {
+          // Every failed request's error event bubbles up to the transaction,
+          // so an aborted transaction calls this once per pending request.
+          if (transactionCompleter.isCompleted) return;
           Logs().e(
             '[IndexedDBBox] [transaction] Error - ${txn.error?.toString()}',
           );
@@ -134,6 +143,8 @@ class BoxCollection with ZoneTransactionMixin {
       unawaited(objStoreClearCompleter.future);
     }
     txn.onerror = (Event event) {
+      // Called once per failed object store clear; see [transaction].
+      if (transactionCompleter.isCompleted) return;
       Logs().e('[IndexedDBBox] [clear] Error - ${txn.error?.toString()}');
       transactionCompleter.completeError(
         'DB clear transaction not completed due to an error - ${txn.error?.toString()}'
